@@ -1,9 +1,9 @@
-// Service worker: guarda la app en caché para que abra sin internet.
-// Estrategia "stale-while-revalidate": responde al instante con la caché y actualiza en segundo plano,
-// así una versión nueva se ve la próxima vez que se abre la app.
-// Al publicar cambios grandes, subí el número de CACHE para forzar la limpieza.
+// Service worker: permite abrir la app sin internet.
+// Estrategia "red primero": con conexión siempre se baja la versión publicada (sin usar la caché HTTP),
+// y la copia guardada solo se usa si no hay internet. Así las actualizaciones se ven al instante.
+// Al publicar, subí el número de CACHE (y APP_VERSION en js/app.js).
 
-const CACHE = 'prestamos-v4';
+const CACHE = 'prestamos-v5';
 const ASSETS = [
   './',
   './index.html',
@@ -19,7 +19,12 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) => cache.addAll(ASSETS.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (event) => {
@@ -35,21 +40,19 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
 
+  const key = request.mode === 'navigate' ? './index.html' : request;
   event.respondWith(
-    caches.open(CACHE).then(async (cache) => {
-      const key = request.mode === 'navigate' ? './index.html' : request;
-      const cached = await cache.match(key, { ignoreSearch: true });
-      const network = fetch(request)
-        .then((response) => {
-          if (response.ok) cache.put(key, response.clone());
-          return response;
-        })
-        .catch(() => cached);
-      if (cached) {
-        event.waitUntil(network);
-        return cached;
+    (async () => {
+      const cache = await caches.open(CACHE);
+      try {
+        const response = await fetch(request, { cache: 'no-cache' });
+        if (response.ok) cache.put(key, response.clone());
+        return response;
+      } catch {
+        const cached = await cache.match(key, { ignoreSearch: true });
+        if (cached) return cached;
+        throw new Error('Sin conexión y sin copia guardada');
       }
-      return network;
-    }),
+    })(),
   );
 });
