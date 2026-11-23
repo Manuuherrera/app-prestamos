@@ -19,8 +19,10 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 - **Dos modalidades:**
   - **Con porcentaje:** total = capital + %, a devolver en la fecha acordada. Ej.: $100.000 al 20 % → $120.000.
   - **Cuota diaria:** una cuota fija por día, desde el día siguiente al inicio hasta la fecha de la última cuota. Total = cuota × días.
-- **Mora:** un monto fijo por cada día de atraso después de la fecha acordada, mientras quede saldo. Si se paga todo, deja de correr.
-- **Cambiar la mora:** desde el detalle, *Cambiar mora diaria* tiene dos opciones:
+- **Mora:** corre después de la fecha acordada, mientras quede saldo, y deja de correr cuando se paga todo. En cada préstamo se elige:
+  - **Monto fijo** o **% del capital** (el porcentaje se calcula siempre sobre el capital, aunque haya pagos parciales).
+  - **Por día, por semana o por mes.** Se cobra proporcional a los días: semana = 7 días, mes = 30 días. Ej.: 7 % semanal sobre $200.000 → $2.000 por día de atraso.
+- **Cambiar la mora:** desde el detalle, *Cambiar mora* tiene dos opciones (y se puede pasar de monto fijo a porcentaje):
   - **Desde una fecha** (por ejemplo, hoy): lo que ya se generó queda igual y la nueva tarifa corre desde ese día. El detalle muestra la mora separada por tramos.
   - **Todo el préstamo:** recalcula toda la mora con la nueva tarifa, también la de los días pasados.
 - **Préstamos viejos:** se cargan con fechas pasadas. El campo opcional *Cobrar mora desde* sirve para empezar a contar la mora desde una fecha posterior al vencimiento.
@@ -41,7 +43,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 
 ### Cómo se calcula la mora
 
-Por cada día de atraso (desde el día siguiente al vencimiento, o desde *Cobrar mora desde*), si al empezar ese día queda saldo, se suma la mora diaria. El "saldo a hoy" ya incluye la mora de hoy: si la persona paga ese monto hoy, la deuda queda en cero y la mora deja de correr.
+Por cada día de atraso (desde el día siguiente al vencimiento, o desde *Cobrar mora desde*), si al empezar ese día queda saldo, se suma la mora diaria vigente ese día (la tarifa del período dividida por 1, 7 o 30, redondeada a centavos). El "saldo a hoy" ya incluye la mora de hoy: si la persona paga ese monto hoy, la deuda queda en cero y la mora deja de correr.
 
 ## Desarrollo
 
