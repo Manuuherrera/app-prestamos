@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeLoan, loanTerms, totalsByCurrency, lateFeeStart } from '../js/calc.js';
+import { computeLoan, loanTerms, totalsByCurrency, lateFeeStart, feeOn, profitReport, paymentsByMonth } from '../js/calc.js';
 import { parseAmount, money } from '../js/format.js';
 
 const base = {
@@ -130,6 +130,71 @@ test('totales por moneda: solo préstamos abiertos', () => {
   assert.equal(t.ARS.count, 1);
   assert.equal(t.ARS.overdue, 1);
   assert.equal(t.USD.balance, 110);
+});
+
+test('cambio de mora desde una fecha: lo anterior queda igual', () => {
+  // Vence 1/2. Mora 1000 del 2/2 al 9/2 (8 días), desde el 10/2 pasa a 3000.
+  const l = loan({ lateFeeChanges: [{ id: 'c1', from: '2026-02-10', amount: 3000 }] });
+  assert.equal(feeOn(l, '2026-02-09'), 1000);
+  assert.equal(feeOn(l, '2026-02-10'), 3000);
+  const c = computeLoan(l, '2026-02-12');
+  assert.equal(c.mora, 8 * 1000 + 3 * 3000);
+  assert.equal(c.moraDays, 11);
+  assert.equal(c.currentFee, 3000);
+  assert.deepEqual(
+    c.moraSegments.map((s) => [s.from, s.to, s.days, s.fee, s.subtotal]),
+    [
+      ['2026-02-02', '2026-02-09', 8, 1000, 8000],
+      ['2026-02-10', '2026-02-12', 3, 3000, 9000],
+    ],
+  );
+});
+
+test('cambio de mora a cero: deja de sumar pero lo pasado queda', () => {
+  const l = loan({ lateFeeChanges: [{ id: 'c1', from: '2026-02-05', amount: 0 }] });
+  const c = computeLoan(l, '2026-03-01');
+  assert.equal(c.mora, 3000);
+  assert.equal(c.status, 'overdue');
+});
+
+test('mora base cero con cambio posterior: empieza a cobrar desde el cambio', () => {
+  const l = loan({ lateFeePerDay: 0, lateFeeChanges: [{ id: 'c1', from: '2026-02-20', amount: 500 }] });
+  assert.equal(computeLoan(l, '2026-02-21').mora, 1000);
+});
+
+test('reporte de ganancia: los pagos cubren primero el capital', () => {
+  const a = loan({ payments: [{ id: 'p', date: '2026-01-20', amount: 120000 }] }); // cerrado, ganó 20.000
+  const b = loan({ capital: 50000, percent: 10, payments: [{ id: 'q', date: '2026-01-10', amount: 20000 }] }); // abierto
+  const f = loan({ capital: 30000, percent: 50, forgivenAt: '2026-01-15', payments: [{ id: 'r', date: '2026-01-05', amount: 10000 }] });
+  const asOf = '2026-01-25';
+  const r = profitReport([a, b, f].map((l) => ({ loan: l, c: computeLoan(l, asOf) })));
+  assert.equal(r.invested, 180000);
+  assert.equal(r.collected, 150000);
+  assert.equal(r.realized, 20000);
+  assert.equal(r.inStreet, 30000);
+  assert.equal(r.pending, 5000);
+  assert.equal(r.balance, 35000);
+  assert.equal(r.lost, 20000);
+  assert.equal(r.forgivenProfit, 15000);
+  assert.equal(r.open, 1);
+  assert.equal(r.closed, 2);
+  assert.ok(Math.abs(r.roi - 20000 / 180000) < 1e-9);
+});
+
+test('cobros por mes', () => {
+  const l = loan({
+    payments: [
+      { id: 'a', date: '2026-01-05', amount: 1000 },
+      { id: 'b', date: '2026-03-10', amount: 2000 },
+      { id: 'c', date: '2026-03-20', amount: 500 },
+      { id: 'd', date: '2025-06-01', amount: 9999 },
+    ],
+  });
+  assert.deepEqual(paymentsByMonth([l], '2026-03-25', 3), [
+    { month: '2026-01', total: 1000 },
+    { month: '2026-02', total: 0 },
+    { month: '2026-03', total: 2500 },
+  ]);
 });
 
 test('parseAmount entiende el formato argentino', () => {

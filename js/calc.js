@@ -51,6 +51,21 @@ export function lateFeeStart(loan) {
   return loan.lateFeeFrom && loan.lateFeeFrom > dayAfterDue ? loan.lateFeeFrom : dayAfterDue;
 }
 
+/** Cambios de mora ordenados por fecha. Cada uno rige desde `from` (inclusive) hasta el siguiente. */
+export function feeChanges(loan) {
+  return (loan.lateFeeChanges || []).slice().sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+
+/** Mora diaria vigente en un día: la del último cambio con `from` <= día, o la mora base del préstamo. */
+export function feeOn(loan, iso, changes = feeChanges(loan)) {
+  let fee = loan.lateFeePerDay || 0;
+  for (const ch of changes) {
+    if (ch.from <= iso) fee = ch.amount;
+    else break;
+  }
+  return fee;
+}
+
 /**
  * Estado del préstamo a una fecha dada.
  *
@@ -69,12 +84,15 @@ export function computeLoan(loan, asOf = todayISO()) {
 
   const forgiven = Boolean(loan.forgivenAt);
   const moraUntil = forgiven && loan.forgivenAt < asOf ? loan.forgivenAt : asOf;
-  const fee = loan.lateFeePerDay || 0;
+  const changes = feeChanges(loan);
+  const anyFee = (loan.lateFeePerDay || 0) > 0 || changes.some((ch) => ch.amount > 0);
   const moraFrom = lateFeeStart(loan);
 
   let mora = 0;
   let moraDays = 0;
-  if (fee > 0 && moraFrom <= moraUntil) {
+  // Tramos de mora: días consecutivos cobrados con la misma tarifa.
+  const segments = [];
+  if (anyFee && moraFrom <= moraUntil) {
     let i = 0;
     let paidBefore = 0;
     const end = dayNumber(moraUntil);
@@ -85,8 +103,19 @@ export function computeLoan(loan, asOf = todayISO()) {
       }
       // Una vez saldado no puede volver a tener saldo (los pagos solo restan), así que cortamos.
       if (terms.total + mora - paidBefore <= EPS) break;
+      const iso = fromDayNumber(d);
+      const fee = feeOn(loan, iso, changes);
+      if (fee <= 0) continue;
       mora += fee;
       moraDays++;
+      const last = segments[segments.length - 1];
+      if (last && last.fee === fee && dayNumber(last.to) === d - 1) {
+        last.to = iso;
+        last.days++;
+        last.subtotal = round2(last.subtotal + fee);
+      } else {
+        segments.push({ from: iso, to: iso, days: 1, fee, subtotal: fee });
+      }
     }
     mora = round2(mora);
   }
@@ -121,6 +150,8 @@ export function computeLoan(loan, asOf = todayISO()) {
     mora,
     moraDays,
     moraFrom,
+    moraSegments: segments,
+    currentFee: feeOn(loan, asOf, changes),
     owed,
     balance,
     status,
@@ -151,6 +182,65 @@ export function compareLoans(a, b) {
     return da < db ? 1 : da > db ? -1 : 0;
   }
   return a.loan.dueDate < b.loan.dueDate ? -1 : a.loan.dueDate > b.loan.dueDate ? 1 : 0;
+}
+
+/**
+ * Reporte de rentabilidad de un conjunto de préstamos (una sola dirección y moneda).
+ * Convención: los pagos cubren primero el capital y después el interés y la mora.
+ * - invested:  capital prestado (histórico)
+ * - inStreet:  capital todavía no recuperado de préstamos abiertos
+ * - collected: total cobrado
+ * - realized:  ganancia ya cobrada (lo cobrado por encima del capital)
+ * - pending:   ganancia que falta cobrar en préstamos abiertos (interés + mora a hoy)
+ * - lost:      capital no recuperado de préstamos condonados
+ * - forgivenProfit: interés y mora que se dejaron de cobrar por condonar
+ */
+export function profitReport(items) {
+  const r = { count: 0, open: 0, closed: 0, invested: 0, inStreet: 0, collected: 0, realized: 0, pending: 0, mora: 0, lost: 0, forgivenProfit: 0, balance: 0 };
+  for (const { loan, c } of items) {
+    r.count++;
+    r.invested += loan.capital;
+    r.collected += c.paid;
+    r.mora += c.mora;
+    const realized = Math.max(0, c.paid - loan.capital);
+    const expectedProfit = Math.max(0, c.owed - loan.capital);
+    r.realized += realized;
+    if (isOpen(c.status)) {
+      r.open++;
+      r.inStreet += Math.max(0, loan.capital - c.paid);
+      r.pending += Math.max(0, expectedProfit - realized);
+      r.balance += Math.max(0, c.balance);
+    } else {
+      r.closed++;
+      if (c.status === 'forgiven') {
+        r.lost += Math.max(0, loan.capital - c.paid);
+        r.forgivenProfit += Math.max(0, expectedProfit - realized);
+      }
+    }
+  }
+  for (const k of Object.keys(r)) if (!['count', 'open', 'closed'].includes(k)) r[k] = round2(r[k]);
+  r.roi = r.invested > 0 ? r.realized / r.invested : 0;
+  r.expectedRoi = r.invested > 0 ? (r.realized + r.pending) / r.invested : 0;
+  return r;
+}
+
+/** Total pagado por mes ('YYYY-MM') en los últimos `months` meses hasta `asOf`, del más viejo al más nuevo. */
+export function paymentsByMonth(loans, asOf, months = 6) {
+  const [y, m] = asOf.split('-').map(Number);
+  const keys = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(y, m - 1 - i, 1));
+    keys.push(d.toISOString().slice(0, 7));
+  }
+  const sums = Object.fromEntries(keys.map((k) => [k, 0]));
+  for (const loan of loans) {
+    for (const p of loan.payments || []) {
+      if (p.date > asOf) continue;
+      const k = p.date.slice(0, 7);
+      if (k in sums) sums[k] = round2(sums[k] + p.amount);
+    }
+  }
+  return keys.map((month) => ({ month, total: sums[month] }));
 }
 
 /** Totales de saldo pendiente por moneda. `items` son pares { loan, c }. */
