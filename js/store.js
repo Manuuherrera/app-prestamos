@@ -37,7 +37,12 @@ export function normalize(raw) {
       capital: num(l.capital),
       startDate: l.startDate,
       dueDate: l.dueDate,
-      mode: l.mode === 'daily' ? 'daily' : 'percent',
+      mode: ['daily', 'installments'].includes(l.mode) ? l.mode : 'percent',
+      installments: (Array.isArray(l.installments) ? l.installments : [])
+        .filter((q) => q && isIso(q.date) && num(q.amount) > 0)
+        .map((q) => ({ id: String(q.id || uid()), date: q.date, amount: num(q.amount) })),
+      graceDays: Math.max(0, Math.floor(num(l.graceDays))),
+      schedule: l.schedule && typeof l.schedule === 'object' ? { freq: String(l.schedule.freq || 'monthly'), everyDays: num(l.schedule.everyDays) || 30 } : null,
       percent: num(l.percent),
       dailyAmount: num(l.dailyAmount),
       // Formato viejo: `lateFeePerDay` (monto fijo diario) y cambios con `amount`. Se migran a tarifas.
