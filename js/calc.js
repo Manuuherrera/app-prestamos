@@ -162,9 +162,12 @@ export function computeLoan(loan, asOf = todayISO()) {
   else status = 'current';
 
   const lastPayment = payments.length ? payments[payments.length - 1].date : null;
+  const split = partnerSplit(loan, terms, mora);
 
   return {
     ...terms,
+    ...split,
+    myProfit: round2(owed - loan.capital - split.partnerTotal),
     paid,
     mora,
     moraDays,
@@ -180,6 +183,24 @@ export function computeLoan(loan, asOf = todayISO()) {
     lastPayment,
     progress: owed > 0 ? Math.min(1, paid / owed) : 1,
   };
+}
+
+/**
+ * Reparto del interés con un tercero (por ejemplo, un amigo que trajo al deudor). No toca el capital
+ * ni lo que debe el deudor: solo divide la ganancia.
+ * `loan.partner = { name, value, includeMora }`:
+ * - modo percent: `value` son puntos de % del capital (de un 60 %, el amigo se queda con 10).
+ * - modo daily:   `value` es su parte del interés por día (de $10.000/día, el amigo $4.000).
+ * - includeMora:  si también le toca la mora, en la misma proporción que el interés.
+ */
+export function partnerSplit(loan, terms, mora) {
+  const p = loan.partner;
+  const none = { partnerName: '', partnerInterest: 0, partnerMora: 0, partnerTotal: 0 };
+  if (!p || !(p.value > 0) || !(terms.interest > 0)) return none;
+  const raw = loan.mode === 'daily' ? p.value * terms.days : (loan.capital * p.value) / 100;
+  const partnerInterest = round2(Math.min(raw, terms.interest));
+  const partnerMora = p.includeMora ? round2((mora * partnerInterest) / terms.interest) : 0;
+  return { partnerName: p.name || 'Tercero', partnerInterest, partnerMora, partnerTotal: round2(partnerInterest + partnerMora) };
 }
 
 export const OPEN_STATUSES = ['overdue', 'dueSoon', 'current'];
@@ -207,13 +228,18 @@ export function compareLoans(a, b) {
  * - invested:  capital prestado (histórico)
  * - inStreet:  capital todavía no recuperado de préstamos abiertos
  * - collected: total cobrado
- * - realized:  ganancia ya cobrada (lo cobrado por encima del capital)
- * - pending:   ganancia que falta cobrar en préstamos abiertos (interés + mora a hoy)
+ * - realized:  TU ganancia ya cobrada (lo cobrado por encima del capital, menos la parte de terceros)
+ * - pending:   TU ganancia que falta cobrar en préstamos abiertos (interés + mora a hoy)
+ * - partnerRealized / partnerPending: la parte de terceros, cobrada y por cobrar
  * - lost:      capital no recuperado de préstamos condonados
  * - forgivenProfit: interés y mora que se dejaron de cobrar por condonar
+ * La parte de terceros se reparte proporcionalmente sobre cada peso de ganancia cobrado.
  */
 export function profitReport(items) {
-  const r = { count: 0, open: 0, closed: 0, invested: 0, inStreet: 0, collected: 0, realized: 0, pending: 0, mora: 0, lost: 0, forgivenProfit: 0, balance: 0 };
+  const r = {
+    count: 0, open: 0, closed: 0, invested: 0, inStreet: 0, collected: 0, realized: 0, pending: 0,
+    partnerRealized: 0, partnerPending: 0, mora: 0, lost: 0, forgivenProfit: 0, balance: 0,
+  };
   for (const { loan, c } of items) {
     r.count++;
     r.invested += loan.capital;
@@ -221,11 +247,15 @@ export function profitReport(items) {
     r.mora += c.mora;
     const realized = Math.max(0, c.paid - loan.capital);
     const expectedProfit = Math.max(0, c.owed - loan.capital);
-    r.realized += realized;
+    const partnerFrac = expectedProfit > 0 ? Math.min(1, (c.partnerTotal || 0) / expectedProfit) : 0;
+    r.realized += realized * (1 - partnerFrac);
+    r.partnerRealized += realized * partnerFrac;
     if (isOpen(c.status)) {
       r.open++;
       r.inStreet += Math.max(0, loan.capital - c.paid);
-      r.pending += Math.max(0, expectedProfit - realized);
+      const pending = Math.max(0, expectedProfit - realized);
+      r.pending += pending * (1 - partnerFrac);
+      r.partnerPending += pending * partnerFrac;
       r.balance += Math.max(0, c.balance);
     } else {
       r.closed++;

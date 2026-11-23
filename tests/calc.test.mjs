@@ -202,6 +202,36 @@ test('reporte de ganancia: los pagos cubren primero el capital', () => {
   assert.ok(Math.abs(r.roi - 20000 / 180000) < 1e-9);
 });
 
+test('reparto del interés: porcentaje (60 % total, el amigo 10 puntos)', () => {
+  const l = loan({ percent: 60, partner: { name: 'Juan', value: 10, includeMora: false } });
+  const c = computeLoan(l, '2026-02-03'); // 2 días de mora × 1.000
+  assert.equal(c.total, 160000); // el deudor debe lo mismo: capital + 60 %
+  assert.equal(c.partnerInterest, 10000);
+  assert.equal(c.partnerMora, 0); // la mora es toda mía
+  assert.equal(c.myProfit, 50000 + 2000);
+  assert.equal(c.balance, 162000);
+});
+
+test('reparto del interés: diario (10.000/día, el amigo 4.000) con mora compartida', () => {
+  const l = loan({ mode: 'daily', dailyAmount: 10000, dueDate: '2026-01-11', partner: { name: 'Juan', value: 4000, includeMora: true } });
+  const c = computeLoan(l, '2026-01-13'); // 10 días de interés, 2 de mora
+  assert.equal(c.interest, 100000);
+  assert.equal(c.partnerInterest, 40000);
+  assert.equal(c.partnerMora, 800); // 40 % de 2.000
+  assert.equal(c.myProfit, 60000 + 1200);
+});
+
+test('reporte con reparto: tu ganancia y la de terceros son proporcionales a lo cobrado', () => {
+  const l = loan({ percent: 60, lateFeePerDay: 0, partner: { name: 'Juan', value: 10 }, payments: [{ id: 'p', date: '2026-01-20', amount: 130000 }] });
+  const r = profitReport([{ loan: l, c: computeLoan(l, '2026-01-25') }]);
+  // Cobró 30.000 de ganancia de 60.000 → 1/6 es del amigo.
+  assert.equal(r.realized, 25000);
+  assert.equal(r.partnerRealized, 5000);
+  assert.equal(r.pending, 25000);
+  assert.equal(r.partnerPending, 5000);
+  assert.equal(r.invested, 100000); // el capital no cambia
+});
+
 test('cobros por mes', () => {
   const l = loan({
     payments: [
