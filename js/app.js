@@ -22,6 +22,9 @@ import { money, dateLong, dateShort, dateNumeric, parseAmount, amountForInput, p
 // Estado
 // ---------------------------------------------------------------------------
 
+// Subir junto con CACHE en sw.js en cada publicación.
+const APP_VERSION = '1.3.0';
+
 let db = store.load();
 const ui = {
   dir: store.getPref('dir', 'lent'),
@@ -1247,8 +1250,28 @@ function settingsView() {
               { title: 'Instalar en el iPhone' },
             )
       }
-      <p class="about">Préstamos · v1.0</p>`,
+      ${group(
+        `
+        ${kv('Versión', APP_VERSION)}
+        <button type="button" class="row row--action tappable" data-action="force-update">${icon('download')}<span>Buscar actualización</span></button>`,
+        { title: 'App', footer: 'Baja de nuevo la última versión publicada. Tus préstamos no se borran.' },
+      )}`,
   };
+}
+
+/** Borra la app guardada (service worker y caché) y recarga desde internet. No toca localStorage. */
+async function forceUpdate() {
+  if (!navigator.onLine) return toast('Necesitás conexión a internet para actualizar.', 'error');
+  toast('Buscando actualización…');
+  try {
+    const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+    await Promise.all(regs.map((r) => r.unregister()));
+    if (globalThis.caches) await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+  } catch {
+    /* si falla la limpieza, igual recargamos */
+  }
+  store.setPref('justUpdated', APP_VERSION);
+  location.reload();
 }
 
 async function exportBackup() {
@@ -1461,6 +1484,7 @@ const actions = {
     go('#/personas');
   },
   export: exportBackup,
+  'force-update': forceUpdate,
   wipe() {
     if (!confirm('¿Borrar TODOS los préstamos y personas de este teléfono? Te conviene exportar un backup antes.')) return;
     if (!confirm('Última confirmación: esto no se puede deshacer.')) return;
@@ -1532,8 +1556,21 @@ document.addEventListener('visibilitychange', () => {
 render();
 store.requestPersistence();
 
+if (store.getPref('justUpdated', '')) {
+  store.setPref('justUpdated', '');
+  toast(`App actualizada a la versión ${APP_VERSION}`);
+}
+
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // updateViaCache: 'none' → al buscar una versión nueva del service worker no se usa la caché HTTP.
+  navigator.serviceWorker
+    .register('./sw.js', { updateViaCache: 'none' })
+    .then((reg) => {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    })
+    .catch(() => {});
 }
 
 // Exportado solo para depurar desde la consola.
