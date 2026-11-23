@@ -1,6 +1,6 @@
 # Préstamos
 
-App para el iPhone (PWA) para registrar la plata que prestás y la que te prestaron: fechas, intereses, cuotas diarias, mora y pagos parciales.
+App para el iPhone (PWA) para registrar la plata que prestás y la que te prestaron: fechas, intereses (porcentaje o interés diario), mora y pagos parciales.
 
 **Los datos quedan solo en tu teléfono.** En internet solo está el código de la app; no hay servidor ni base de datos.
 
@@ -18,7 +18,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 - **Pesos y dólares:** cada préstamo tiene su moneda y los totales se muestran por moneda.
 - **Dos modalidades:**
   - **Con porcentaje:** total = capital + %, a devolver en la fecha acordada. Ej.: $100.000 al 20 % → $120.000.
-  - **Cuota diaria:** una cuota fija por día, desde el día siguiente al inicio hasta la fecha de la última cuota. Total = cuota × días.
+  - **Interés diario:** un interés fijo por día, desde el día siguiente al préstamo hasta la fecha de pago (inclusive). Total = capital + interés diario × días, y se devuelve todo junto en la fecha de pago. Ej.: $600.000 del 5/11 al 11/11 a $25.000 por día → 6 días, $150.000 de interés, total $750.000.
 - **Mora:** corre después de la fecha acordada, mientras quede saldo, y deja de correr cuando se paga todo. En cada préstamo se elige:
   - **Monto fijo** o **% del capital** (el porcentaje se calcula siempre sobre el capital, aunque haya pagos parciales).
   - **Por día, por semana o por mes.** Se cobra proporcional a los días: semana = 7 días, mes = 30 días. Ej.: 7 % semanal sobre $200.000 → $2.000 por día de atraso.
@@ -27,7 +27,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
   - **Todo el préstamo:** recalcula toda la mora con la nueva tarifa, también la de los días pasados.
 - **Préstamos viejos:** se cargan con fechas pasadas. El campo opcional *Cobrar mora desde* sirve para empezar a contar la mora desde una fecha posterior al vencimiento.
 - **Pagos parciales:** con fecha, monto y nota. Se pueden editar o borrar.
-- **Estados automáticos:** Al día · Vence pronto (3 días o menos) · Atrasado (cuotas diarias impagas) · Vencido (corre mora) · Pagado · Condonado (manual, se puede revertir).
+- **Estados automáticos:** Al día · Vence pronto (3 días o menos) · Vencido (corre mora) · Pagado · Condonado (manual, se puede revertir).
 - **Personas:** nombre, teléfono y notas, con accesos para llamar y abrir WhatsApp.
 - **Resumen por WhatsApp** de cualquier préstamo.
 - **Reportes** (por moneda):
