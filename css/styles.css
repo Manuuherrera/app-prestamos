@@ -375,6 +375,89 @@ summary {
   color: var(--text-2);
 }
 
+.is-accent {
+  color: var(--accent);
+}
+
+/* ---------- Reportes ---------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.625rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: 0.8125rem;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.stat-sub {
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.stat--warn .stat-value {
+  color: var(--orange);
+}
+
+.group--bars .group-body {
+  padding: 0.5rem 0;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 2.75rem 1fr auto;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.375rem 1rem;
+}
+
+.bar-label {
+  font-size: 0.875rem;
+  color: var(--text-2);
+  text-transform: capitalize;
+}
+
+.bar-track {
+  height: 0.75rem;
+}
+
+.bar {
+  display: block;
+  height: 100%;
+  border-radius: 0 4px 4px 0;
+  background: var(--accent);
+}
+
+.bar-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 5.5rem;
+}
+
 /* ---------- Aviso de backup ---------- */
 
 .notice {
@@ -892,6 +975,10 @@ details.field summary::after {
 
 details.field[open] summary::after {
   transform: rotate(90deg);
+}
+
+.hint--sheet {
+  margin: -0.75rem 1rem 1rem;
 }
 
 .field--nested {
