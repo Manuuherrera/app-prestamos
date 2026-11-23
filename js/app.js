@@ -12,6 +12,9 @@ import {
   asRate,
   baseRate,
   dailyFee,
+  sortedInstallments,
+  scheduleDates,
+  addMonths,
   profitReport,
   paymentsByMonth,
 } from './calc.js';
@@ -23,7 +26,7 @@ import { money, dateLong, dateShort, dateNumeric, parseAmount, amountForInput, p
 // ---------------------------------------------------------------------------
 
 // Subir junto con CACHE en sw.js en cada publicación.
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 let db = store.load();
 const ui = {
@@ -159,10 +162,13 @@ const PERIOD = {
 };
 
 /** "$ 2.000 por día" · "5 % semanal del capital" · "Sin mora" */
-function rateLabel(rate, cur) {
+function rateLabel(rate, cur, mode) {
   const r = asRate(rate);
   if (!r.value) return 'Sin mora';
-  return r.type === 'percent' ? `${amountForInput(r.value)} % ${PERIOD[r.period].adj} del capital` : `${money(r.value, cur)} ${PERIOD[r.period].per}`;
+  const perCuota = mode === 'installments';
+  return r.type === 'percent'
+    ? `${amountForInput(r.value)} % ${PERIOD[r.period].adj} ${perCuota ? 'de cada cuota atrasada' : 'del capital'}`
+    : `${money(r.value, cur)} ${PERIOD[r.period].per}${perCuota ? ' por cada cuota atrasada' : ''}`;
 }
 
 /** Campos para cargar una tarifa (tipo, valor y período). */
@@ -170,11 +176,13 @@ function rateFields(rate, cur, { autofocus = false } = {}) {
   const r = asRate(rate);
   return `
     <div class="field">
-      ${segmented('feeType', [['fixed', 'Monto fijo'], ['percent', '% del capital']], r.type, { form: true })}
+      ${segmented('feeType', [['fixed', 'Monto fijo'], ['percent', 'Porcentaje']], r.type, { form: true })}
     </div>
     <label class="field">
-      <span class="field-label" data-when="feeType:fixed">Monto de la mora (${cur === 'USD' ? 'US$' : '$'})</span>
-      <span class="field-label" data-when="feeType:percent">Porcentaje del capital</span>
+      <span class="field-label" data-when="feeType:fixed;mode:percent|daily">Monto de la mora (${cur === 'USD' ? 'US$' : '$'})</span>
+      <span class="field-label" data-when="feeType:fixed;mode:installments">Monto por cada cuota atrasada (${cur === 'USD' ? 'US$' : '$'})</span>
+      <span class="field-label" data-when="feeType:percent;mode:percent|daily">Porcentaje del capital</span>
+      <span class="field-label" data-when="feeType:percent;mode:installments">Porcentaje de cada cuota atrasada</span>
       <span class="input-affix">
         <input name="feeValue" type="text" inputmode="decimal" placeholder="0 = sin mora" value="${r.value ? amountForInput(r.value) : ''}" ${autofocus ? 'autofocus' : ''} enterkeyhint="done">
         <span data-when="feeType:percent">%</span>
@@ -192,17 +200,20 @@ function readRate(f) {
   return { type: f.get('feeType') === 'percent' ? 'percent' : 'fixed', value: raw ? parseAmount(raw) : 0, period: f.get('feePeriod') || 'day' };
 }
 
-/** Muestra cuánto suma por día una tarifa que no es un monto fijo diario. */
-function updateRatePreview(form, capital, cur) {
+/**
+ * Muestra cuánto suma por día una tarifa que no es un monto fijo diario.
+ * `base` es el capital, o el monto de una cuota si `perCuota`.
+ */
+function updateRatePreview(form, base, cur, perCuota = false) {
   const out = form.querySelector('.preview--fee');
   if (!out) return;
   const rate = readRate(new FormData(form));
   let html = '';
   if (!Number.isNaN(rate.value) && rate.value > 0 && !(rate.type === 'fixed' && rate.period === 'day')) {
-    if (rate.type === 'percent' && !(capital > 0)) html = '<span>Cargá el capital para ver cuánto suma por día.</span>';
+    if (rate.type === 'percent' && !(base > 0)) html = `<span>Cargá ${perCuota ? 'el monto de la cuota' : 'el capital'} para ver cuánto suma por día.</span>`;
     else {
-      const daily = dailyFee({ capital }, rate);
-      html = `<strong>Suma ${money(daily, cur)} por día de atraso</strong>${rate.period !== 'day' ? `<span>Se cobra proporcional: ${rate.period === 'week' ? 'semana = 7 días' : 'mes = 30 días'}.</span>` : ''}`;
+      const daily = dailyFee({ capital: base }, rate);
+      html = `<strong>Suma ${money(daily, cur)} por día de atraso${perCuota ? ` por cada cuota${rate.type === 'percent' ? ` de ${money(base, cur)}` : ''}` : ''}</strong>${rate.period !== 'day' ? `<span>Se cobra proporcional: ${rate.period === 'week' ? 'semana = 7 días' : 'mes = 30 días'}.</span>` : ''}`;
     }
   }
   out.innerHTML = html;
@@ -216,6 +227,15 @@ const moraDetail = (c, m) =>
 function dueText(loan, c, asOf) {
   if (c.status === 'paid') return c.lastPayment ? `Pagado el ${dateShort(c.lastPayment, asOf)}` : 'Pagado';
   if (c.status === 'forgiven') return `Condonado el ${dateShort(loan.forgivenAt, asOf)}`;
+  if (loan.mode === 'installments' && c.nextInstallment) {
+    const q = c.nextInstallment;
+    const of = `${q.n}/${c.installments.length}`;
+    if (c.status === 'overdue') return c.lateCount > 1 ? `${c.lateCount} cuotas atrasadas` : `Cuota ${of} atrasada ${plural(q.daysLate || c.daysOverdue, 'día', 'días')}`;
+    if (q.state === 'grace') return `Cuota ${of}: en gracia hasta el ${dateShort(q.graceUntil, asOf)}`;
+    if (c.daysToDue === 0) return `Cuota ${of} vence hoy`;
+    if (c.daysToDue === 1) return `Cuota ${of} vence mañana`;
+    return `Cuota ${of} vence el ${dateShort(q.date, asOf)}`;
+  }
   if (c.status === 'overdue') return `Venció hace ${plural(c.daysOverdue, 'día', 'días')}`;
   if (c.daysToDue === 0) return 'Vence hoy';
   if (c.daysToDue === 1) return 'Vence mañana';
@@ -247,7 +267,7 @@ const group = (inner, { title = '', footer = '', cls = '' } = {}) => `
   </section>`;
 
 const kv = (label, value, cls = '') => `
-  <div class="row row--static ${cls}">
+  <div class="row row--static row--kv ${cls}">
     <span class="row-main"><span class="row-label">${label}</span></span>
     <span class="row-end"><span class="row-value">${value}</span></span>
   </div>`;
@@ -406,13 +426,26 @@ function loanDetailView(loan) {
   const open = isOpen(c.status);
 
   let callout = '';
-  if (c.status === 'overdue') {
+  const q = c.nextInstallment;
+  if (loan.mode === 'installments' && (c.status === 'overdue' || c.status === 'dueSoon') && q) {
+    const feeText = c.currentRate.value ? rateLabel(c.currentRate, cur, loan.mode) : '';
+    if (c.status === 'overdue') {
+      callout = `<div class="callout callout--red">
+        <strong>${c.lateCount > 1 ? `${c.lateCount} cuotas atrasadas.` : `La cuota ${q.n} está atrasada ${plural(q.daysLate, 'día', 'días')}.`}</strong>
+        ${feeText ? `Corre una mora de ${feeText}${c.currentFee ? ` (hoy suma ${m(c.currentFee)} por día)` : ''}.` : 'No tiene mora acordada.'}
+      </div>`;
+    } else if (q.state === 'grace') {
+      callout = `<div class="callout callout--yellow"><strong>La cuota ${q.n} venció el ${dateShort(q.date, asOf)}.</strong> Tiene margen hasta el ${dateShort(q.graceUntil, asOf)}${feeText ? `; después corre una mora de ${feeText}` : ''}.</div>`;
+    } else {
+      callout = `<div class="callout callout--yellow"><strong>La cuota ${q.n} (${m(q.remaining)}) ${c.daysToDue === 0 ? 'vence hoy' : c.daysToDue === 1 ? 'vence mañana' : `vence en ${c.daysToDue} días`}.</strong>${loan.graceDays ? ` Tiene ${plural(loan.graceDays, 'día', 'días')} de margen.` : ''}</div>`;
+    }
+  } else if (c.status === 'overdue') {
     callout = `<div class="callout callout--red">
       <strong>Venció hace ${plural(c.daysOverdue, 'día', 'días')}.</strong>
-      ${c.currentFee ? `Corre una mora de ${rateLabel(c.currentRate, cur)}${c.currentRate.type === 'fixed' && c.currentRate.period === 'day' ? '' : ` (${m(c.currentFee)} por día)`}${c.moraFrom > asOf ? ` desde el ${dateShort(c.moraFrom, asOf)}` : ''}.` : c.mora ? 'Ahora no corre mora.' : 'No tiene mora acordada.'}
+      ${c.currentFee ? `Corre una mora de ${rateLabel(c.currentRate, cur, loan.mode)}${c.currentRate.type === 'fixed' && c.currentRate.period === 'day' ? '' : ` (${m(c.currentFee)} por día)`}${c.moraFrom > asOf ? ` desde el ${dateShort(c.moraFrom, asOf)}` : ''}.` : c.mora ? 'Ahora no corre mora.' : 'No tiene mora acordada.'}
     </div>`;
   } else if (c.status === 'dueSoon') {
-    callout = `<div class="callout callout--yellow"><strong>${c.daysToDue === 0 ? 'Vence hoy.' : c.daysToDue === 1 ? 'Vence mañana.' : `Vence en ${c.daysToDue} días.`}</strong> ${c.currentFee ? `Después corre una mora de ${rateLabel(c.currentRate, cur)}.` : ''}</div>`;
+    callout = `<div class="callout callout--yellow"><strong>${c.daysToDue === 0 ? 'Vence hoy.' : c.daysToDue === 1 ? 'Vence mañana.' : `Vence en ${c.daysToDue} días.`}</strong> ${c.currentFee ? `Después corre una mora de ${rateLabel(c.currentRate, cur, loan.mode)}.` : ''}</div>`;
   }
 
   const hero = `
@@ -428,16 +461,45 @@ function loanDetailView(loan) {
     </section>`;
 
   const terms =
-    loan.mode === 'daily'
-      ? kv('Interés', `${m(loan.dailyAmount)} × ${plural(c.days, 'día', 'días')} = ${m(c.interest)}`)
-      : kv('Interés', `${amountForInput(loan.percent)} % = ${m(c.interest)}`);
+    loan.mode === 'installments'
+      ? `${kv('Cuotas', c.installments.every((it) => it.amount === c.installments[0].amount) ? `${c.installments.length} × ${m(c.installments[0].amount)}` : plural(c.installments.length, 'cuota', 'cuotas'))}${kv('Ganancia acordada', m(c.interest))}`
+      : loan.mode === 'daily'
+        ? kv('Interés', `${m(loan.dailyAmount)} × ${plural(c.days, 'día', 'días')} = ${m(c.interest)}`)
+        : kv('Interés', `${amountForInput(loan.percent)} % = ${m(c.interest)}`);
+
+  const INST_STATE = {
+    paid: () => 'Pagada',
+    pending: (it) => (it.covered > 0 ? `Pagado ${m(it.covered)} · vence el ${dateShort(it.date, asOf)}` : `Vence el ${dateShort(it.date, asOf)}`),
+    grace: (it) => `Venció el ${dateShort(it.date, asOf)} · margen hasta el ${dateShort(it.graceUntil, asOf)}`,
+    late: (it) => `Atrasada ${plural(it.daysLate, 'día', 'días')}${it.covered > 0 ? ` · pagado ${m(it.covered)}` : ''}`,
+  };
+  const INST_TONE = { paid: 'green', pending: 'blue', grace: 'yellow', late: 'red' };
+  const installmentsGroup =
+    loan.mode === 'installments'
+      ? group(
+          c.installments
+            .map(
+              (it) => `
+          <div class="row row--static">
+            <span class="dot dot--${INST_TONE[it.state]}" aria-hidden="true"></span>
+            <span class="row-main">
+              <span class="row-title">Cuota ${it.n} · ${dateShort(it.date, asOf)}</span>
+              <span class="row-sub ${it.state === 'late' ? 'is-red' : ''}">${INST_STATE[it.state](it)}${it.mora ? ` · mora ${m(it.mora)}` : ''}</span>
+            </span>
+            <span class="row-end"><span class="row-amount ${it.state === 'paid' ? 'is-muted' : ''}">${m(it.state === 'paid' ? it.amount : it.remaining)}</span></span>
+          </div>`,
+            )
+            .join(''),
+          { title: 'Cuotas', footer: `Los pagos se aplican primero a la cuota más vieja.${loan.graceDays ? ` Cada cuota tiene ${plural(loan.graceDays, 'día', 'días')} de margen antes de que corra la mora.` : ''}` },
+        )
+      : '';
 
   const summary = group(
     `
       ${kv('Capital', m(loan.capital))}
       ${terms}
       ${kv('Total acordado', m(c.total))}
-      ${c.status === 'overdue' || c.mora ? kv('Mora', c.mora ? `${m(c.mora)} <small>(${moraDetail(c, m)})</small>` : m(0)) : ''}
+      ${c.status === 'overdue' || c.mora ? kv('Mora', c.mora ? `${m(c.mora)} <small>(${loan.mode === 'installments' ? 'detalle en cuotas' : moraDetail(c, m)})</small>` : m(0)) : ''}
       ${kv('Pagado', m(c.paid))}
       ${kv(open ? 'Saldo a hoy' : 'Saldo', `<strong>${m(Math.max(0, c.balance))}</strong>`, 'row--total')}
       ${c.balance < -0.004 ? kv('Pagado de más', m(-c.balance)) : ''}
@@ -474,14 +536,15 @@ function loanDetailView(loan) {
   const dates = group(
     `
       ${kv('Fecha de inicio', dateLong(loan.startDate))}
-      ${kv('Fecha de pago', dateLong(loan.dueDate))}
-      ${kv(changes.length ? 'Mora inicial' : 'Mora', rateLabel(baseRate(loan), cur))}
+      ${kv(loan.mode === 'installments' ? 'Última cuota' : 'Fecha de pago', dateLong(loan.dueDate))}
+      ${loan.mode === 'installments' ? kv('Margen por cuota', loan.graceDays ? plural(loan.graceDays, 'día', 'días') : 'Sin margen') : ''}
+      ${kv(changes.length ? 'Mora inicial' : 'Mora', rateLabel(baseRate(loan), cur, loan.mode))}
       ${changes
         .map(
           (ch) => `
         <button type="button" class="row tappable" data-action="fee-change-menu" data-id="${ch.id}">
           <span class="row-main"><span class="row-label">Desde el ${dateShort(ch.from, asOf)}</span></span>
-          <span class="row-end"><span class="row-value">${rateLabel(ch.rate, cur)}</span>${icon('chevron', 'row-chevron')}</span>
+          <span class="row-end"><span class="row-value">${rateLabel(ch.rate, cur, loan.mode)}</span>${icon('chevron', 'row-chevron')}</span>
         </button>`,
         )
         .join('')}
@@ -537,7 +600,7 @@ function loanDetailView(loan) {
     title: 'Préstamo',
     back: { href: '#/', label: 'Préstamos' },
     right: `<a class="nav-text tappable" href="#/prestamo/${loan.id}/editar">Editar</a>`,
-    body: `${hero}${callout}${summary}${partnerGroup}${segmentsGroup}${paymentsGroup}${dates}${notes}${actions}`,
+    body: `${hero}${callout}${summary}${installmentsGroup}${partnerGroup}${loan.mode === 'installments' ? '' : segmentsGroup}${paymentsGroup}${dates}${notes}${actions}`,
     loanId: loan.id,
   };
 }
@@ -561,6 +624,9 @@ function loanFormView(loan, presetPersonId) {
     dailyAmount: '',
     lateFee: { type: 'fixed', value: 0, period: 'day' },
     lateFeeFrom: null,
+    installments: [],
+    graceDays: 0,
+    schedule: null,
     notes: '',
   };
   const people = [...db.people].sort((a, b) => a.name.localeCompare(b.name, 'es'));
@@ -615,7 +681,33 @@ function loanFormView(loan, presetPersonId) {
       ${group(
         `
         <div class="field">
-          ${segmented('mode', [['percent', 'Porcentaje total'], ['daily', 'Interés diario']], l.mode, { form: true })}
+          ${segmented('mode', [['percent', 'Porcentaje'], ['daily', 'Interés diario'], ['installments', 'Cuotas']], l.mode, { form: true })}
+        </div>
+        <div data-when="mode:installments">
+          <label class="field">
+            <span class="field-label">Cantidad de cuotas</span>
+            <input name="genCount" data-gen type="text" inputmode="numeric" placeholder="Ej.: 3" value="${l.mode === 'installments' ? l.installments.length : 3}">
+          </label>
+          <label class="field">
+            <span class="field-label">Monto de cada cuota (capital + interés)</span>
+            <input name="genAmount" data-gen type="text" inputmode="decimal" placeholder="0" value="${l.mode === 'installments' && l.installments.length ? amountForInput(l.installments[0].amount) : ''}">
+          </label>
+          <label class="field">
+            <span class="field-label">Primera cuota</span>
+            <input name="genFirst" data-gen type="date" value="${l.mode === 'installments' && l.installments.length ? sortedInstallments(l)[0].date : addMonths(l.startDate, 1)}">
+          </label>
+          <div class="field">
+            <span class="field-label">Frecuencia</span>
+            ${segmented('genFreq', [['weekly', 'Semanal'], ['biweekly', 'Quincenal'], ['monthly', 'Mensual'], ['custom', 'Otra']], l.schedule?.freq || 'monthly', { form: true })}
+          </div>
+          <label class="field" data-when="genFreq:custom">
+            <span class="field-label">Cada cuántos días</span>
+            <input name="genEvery" data-gen type="text" inputmode="numeric" placeholder="Ej.: 10" value="${l.schedule?.everyDays || 10}">
+          </label>
+          <div class="field">
+            <span class="field-label">Cuotas (podés cambiar cualquier fecha o monto)</span>
+            <div class="inst-editor" data-inst-editor>${installmentRows(l.mode === 'installments' ? sortedInstallments(l) : [])}</div>
+          </div>
         </div>
         <label class="field" data-when="mode:percent">
           <span class="field-label">Interés total</span>
@@ -625,7 +717,7 @@ function loanFormView(loan, presetPersonId) {
           <span class="field-label">Interés por día</span>
           <input name="dailyAmount" type="text" inputmode="decimal" placeholder="0" value="${amountForInput(l.dailyAmount)}">
         </label>
-        <label class="field">
+        <label class="field" data-when="mode:percent|daily">
           <span class="field-label">Fecha de pago acordada</span>
           <input name="dueDate" type="date" value="${l.dueDate}" required>
         </label>
@@ -635,6 +727,10 @@ function loanFormView(loan, presetPersonId) {
 
       ${group(
         `
+        <label class="field" data-when="mode:installments">
+          <span class="field-label">Días de margen por cuota</span>
+          <input name="graceDays" type="text" inputmode="numeric" placeholder="0 = sin margen" value="${l.graceDays || ''}">
+        </label>
         ${rateFields(editing ? baseRate(loan) : l.lateFee, l.currency)}
         <details class="field" ${l.lateFeeFrom ? 'open' : ''}>
           <summary>¿Es un préstamo viejo?</summary>
@@ -655,7 +751,7 @@ function loanFormView(loan, presetPersonId) {
         },
       )}
 
-      <div data-when="direction:lent">
+      <div data-when="direction:lent;mode:percent|daily">
         ${group(
           `
           <details class="field" ${l.partner ? 'open' : ''}>
@@ -721,12 +817,56 @@ function readLoanForm(form) {
     lateFeeFrom: f.get('lateFeeFrom') || null,
     notes: String(f.get('notes') || '').trim(),
     partner: readPartner(f),
+    installments: f.get('mode') === 'installments' ? readInstallments(f) : [],
+    graceDays: f.get('graceDays') ? Number(f.get('graceDays')) : 0,
+    schedule: { freq: f.get('genFreq') || 'monthly', everyDays: Math.floor(Number(f.get('genEvery'))) || 30 },
   };
+}
+
+// --- Editor de cuotas ---
+
+/** Filas editables (fecha + monto) de cada cuota. */
+function installmentRows(list) {
+  if (!list.length) return '<p class="hint">Completá la cantidad, el monto y la primera fecha.</p>';
+  return list
+    .map(
+      (q, i) => `
+      <div class="inst-row">
+        <span class="inst-n">${i + 1}</span>
+        <input name="qDate" type="date" value="${q.date}" aria-label="Fecha de la cuota ${i + 1}">
+        <input name="qAmount" type="text" inputmode="decimal" value="${amountForInput(q.amount)}" aria-label="Monto de la cuota ${i + 1}">
+      </div>`,
+    )
+    .join('');
+}
+
+/** Arma las cuotas a partir de cantidad, monto, primera fecha y frecuencia (pisa las ediciones a mano). */
+function regenerateInstallments(form) {
+  const f = new FormData(form);
+  const count = Math.min(120, Math.floor(Number(f.get('genCount'))));
+  const amount = parseAmount(f.get('genAmount'));
+  const first = f.get('genFirst');
+  const editor = form.querySelector('[data-inst-editor]');
+  if (!editor) return;
+  if (!(count > 0) || !(amount > 0) || !first) {
+    editor.innerHTML = installmentRows([]);
+    return;
+  }
+  const dates = scheduleDates(first, count, f.get('genFreq'), Math.floor(Number(f.get('genEvery'))) || 30);
+  editor.innerHTML = installmentRows(dates.map((date) => ({ date, amount })));
+}
+
+function readInstallments(f) {
+  const dates = f.getAll('qDate');
+  const amounts = f.getAll('qAmount');
+  return dates
+    .map((date, i) => ({ date, amount: parseAmount(amounts[i]) }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 /** Reparto del interés: null si no hay (campo vacío o en cero, o si el préstamo es "Me prestaron"). */
 function readPartner(f) {
-  if (f.get('direction') !== 'lent') return null;
+  if (f.get('direction') !== 'lent' || f.get('mode') === 'installments') return null;
   const raw = String(f.get(f.get('mode') === 'daily' ? 'partnerDaily' : 'partnerPct') || '').trim();
   if (!raw) return null;
   const value = parseAmount(raw);
@@ -738,7 +878,13 @@ function validateLoan(v) {
   if (v.personId === '__new' && !v.newName) return 'Escribí el nombre de la persona.';
   if (!(v.capital > 0)) return 'El capital tiene que ser un monto mayor a cero.';
   if (!v.startDate || !v.dueDate) return 'Completá las fechas.';
-  if (v.mode === 'percent') {
+  if (v.mode === 'installments') {
+    if (!v.installments.length) return 'Armá las cuotas: cantidad, monto y fecha de la primera.';
+    if (v.installments.some((q) => !q.date)) return 'Todas las cuotas tienen que tener fecha.';
+    if (v.installments.some((q) => !(q.amount > 0))) return 'Todas las cuotas tienen que tener un monto mayor a cero.';
+    if (v.installments[0].date < v.startDate) return 'Ninguna cuota puede vencer antes de la fecha de inicio.';
+    if (!Number.isInteger(v.graceDays) || v.graceDays < 0) return 'Los días de margen tienen que ser un número entero (0 o más).';
+  } else if (v.mode === 'percent') {
     if (Number.isNaN(v.percent) || v.percent < 0) return 'El porcentaje no es válido.';
     if (v.dueDate < v.startDate) return 'La fecha de pago no puede ser anterior al inicio.';
   } else {
@@ -761,10 +907,18 @@ function updateLoanForm(form) {
   const v = readLoanForm(form);
   const out = form.querySelector('.preview:not(.preview--fee)');
   const cur = v.currency;
-  updateRatePreview(form, v.capital, cur);
+  const inst = v.installments.filter((q) => q.date && q.amount > 0);
+  if (v.mode === 'installments') updateRatePreview(form, inst[0]?.amount || 0, cur, true);
+  else updateRatePreview(form, v.capital, cur);
   const days = v.startDate && v.dueDate ? diffDays(v.startDate, v.dueDate) : 0;
   let html = '';
-  if (v.mode === 'daily' && v.dailyAmount > 0 && days > 0) {
+  if (v.mode === 'installments' && inst.length) {
+    const total = round2(inst.reduce((s, q) => s + q.amount, 0));
+    const gain = round2(total - (v.capital > 0 ? v.capital : 0));
+    html = `<strong>Total a devolver: ${money(total, cur)}</strong>
+      <span>${plural(inst.length, 'cuota', 'cuotas')}, de ${dateShort(inst[0].date, todayISO())} a ${dateShort(inst[inst.length - 1].date, todayISO())}</span>
+      ${v.capital > 0 ? `<span class="${gain < 0 ? 'is-red' : ''}">${gain >= 0 ? `Ganancia: ${money(gain, cur)}` : `Las cuotas no cubren el capital: faltan ${money(-gain, cur)}`}</span>` : ''}`;
+  } else if (v.mode === 'daily' && v.dailyAmount > 0 && days > 0) {
     const t = loanTerms({ ...v, capital: v.capital > 0 ? v.capital : 0 });
     html = `<span>Interés: ${plural(days, 'día', 'días')} × ${money(v.dailyAmount, cur)} = ${money(t.interest, cur)}</span>
       ${v.capital > 0 ? `<strong>Total a devolver: ${money(t.total, cur)}</strong><span>Capital ${money(v.capital, cur)} + interés ${money(t.interest, cur)}, el ${dateShort(v.dueDate, todayISO())}</span>` : ''}
@@ -825,10 +979,14 @@ function saveLoan(form) {
     currency: v.currency,
     capital: v.capital,
     startDate: v.startDate,
-    dueDate: v.dueDate,
+    // En cuotas, la fecha de pago es la de la última cuota.
+    dueDate: v.mode === 'installments' ? v.installments[v.installments.length - 1].date : v.dueDate,
     mode: v.mode,
     percent: v.mode === 'percent' ? v.percent : 0,
     dailyAmount: v.mode === 'daily' ? v.dailyAmount : 0,
+    installments: v.mode === 'installments' ? v.installments.map((q) => ({ id: store.uid(), date: q.date, amount: q.amount })) : [],
+    graceDays: v.mode === 'installments' ? v.graceDays : 0,
+    schedule: v.mode === 'installments' ? v.schedule : null,
     lateFee: v.lateFee,
     lateFeeFrom: v.lateFeeFrom,
     notes: v.notes,
@@ -871,6 +1029,11 @@ function paymentSheet(loan, payment) {
   const suggestions = [];
   if (!payment) {
     if (c.balance > 0) suggestions.push(['Saldo total', c.balance]);
+    if (loan.mode === 'installments' && c.nextInstallment) {
+      const late = c.installments.filter((it) => it.state === 'late');
+      if (late.length > 1) suggestions.push(['Cuotas atrasadas', round2(late.reduce((s, it) => s + it.remaining, 0))]);
+      if (c.nextInstallment.remaining < c.balance) suggestions.push([`Cuota ${c.nextInstallment.n}`, c.nextInstallment.remaining]);
+    }
   }
   openSheet(`
     <form class="form sheet-form" data-form="payment" method="dialog" novalidate>
@@ -958,7 +1121,8 @@ function feeSheet(loan) {
     <form class="form sheet-form" data-form="fee" method="dialog" novalidate>
       <input type="hidden" name="loanId" value="${loan.id}">
       <h2 class="sheet-title">Cambiar mora</h2>
-      <p class="sheet-sub">Ahora: ${rateLabel(c.currentRate, cur)}</p>
+      <p class="sheet-sub">Ahora: ${rateLabel(c.currentRate, cur, loan.mode)}</p>
+      <input type="hidden" name="mode" value="${loan.mode}">
       ${segmented('scope', [['from', 'Desde una fecha'], ['all', 'Todo el préstamo']], 'from', { form: true })}
       ${group(`
         ${rateFields(c.currentRate, cur, { autofocus: true })}
@@ -976,7 +1140,14 @@ function feeSheet(loan) {
     </form>`);
   const form = $sheet.querySelector('form');
   updateWhen(form);
-  updateRatePreview(form, loan.capital, cur);
+  updateRatePreview(form, ...feeBase(loan));
+}
+
+/** Base para la vista previa de la mora: capital, o la próxima cuota si el préstamo es en cuotas. */
+function feeBase(loan) {
+  if (loan.mode !== 'installments') return [loan.capital, loan.currency, false];
+  const c = computeLoan(loan);
+  return [(c.nextInstallment || sortedInstallments(loan)[0])?.amount || 0, loan.currency, true];
 }
 
 /** Muestra u oculta los elementos con data-when="campo:valor" según el formulario. */
@@ -984,8 +1155,10 @@ function updateWhen(form) {
   if (!form) return;
   const f = new FormData(form);
   form.querySelectorAll('[data-when]').forEach((el) => {
-    const [k, val] = el.dataset.when.split(':');
-    el.hidden = f.get(k) !== val;
+    el.hidden = !el.dataset.when.split(';').every((cond) => {
+      const [k, vals] = cond.split(':');
+      return vals.split('|').includes(f.get(k));
+    });
   });
 }
 
@@ -1019,7 +1192,7 @@ function saveFee(form) {
 function feeChangeMenu(loan, ch) {
   openSheet(`
     <div class="sheet-form">
-      <h2 class="sheet-title">${rateLabel(ch.rate ?? ch.amount, loan.currency)}</h2>
+      <h2 class="sheet-title">${rateLabel(ch.rate ?? ch.amount, loan.currency, loan.mode)}</h2>
       <p class="sheet-sub">Desde el ${dateLong(ch.from)}</p>
       ${group(`<button type="button" class="row row--action row--danger tappable" data-action="delete-fee-change" data-id="${ch.id}">${icon('trash')}<span>Eliminar este cambio</span></button>`, {
         footer: 'Si lo eliminás, esos días se recalculan con la tarifa anterior.',
@@ -1410,13 +1583,26 @@ function shareLoan(loan) {
     `Hola${first ? ` ${first}` : ''}, te paso el resumen del préstamo al ${dateNumeric(todayISO())}:`,
     '',
     `• Capital: ${m(loan.capital)} (desde el ${dateNumeric(loan.startDate)})`,
-    loan.mode === 'daily'
-      ? `• Interés: ${plural(c.days, 'día', 'días')} × ${m(loan.dailyAmount)} = ${m(c.interest)}`
-      : `• Interés: ${amountForInput(loan.percent)} % = ${m(c.interest)}`,
-    `• Total acordado: ${m(c.total)}`,
-    `• Fecha de pago: ${dateNumeric(loan.dueDate)}`,
   ];
-  if (c.mora) {
+  if (loan.mode === 'installments') {
+    const STATE = { paid: 'pagada ✅', pending: 'pendiente', grace: 'vencida, en margen', late: 'atrasada' };
+    lines.push(`• ${plural(c.installments.length, 'cuota', 'cuotas')}, total ${m(c.total)}:`);
+    for (const it of c.installments) {
+      lines.push(`   ${it.n}) ${dateNumeric(it.date)} · ${m(it.amount)} · ${STATE[it.state]}${it.state !== 'paid' && it.covered > 0 ? ` (falta ${m(it.remaining)})` : ''}${it.mora ? ` · mora ${m(it.mora)}` : ''}`);
+    }
+    if (loan.graceDays) lines.push(`• Margen por cuota: ${plural(loan.graceDays, 'día', 'días')}`);
+  } else {
+    lines.push(
+      loan.mode === 'daily'
+        ? `• Interés: ${plural(c.days, 'día', 'días')} × ${m(loan.dailyAmount)} = ${m(c.interest)}`
+        : `• Interés: ${amountForInput(loan.percent)} % = ${m(c.interest)}`,
+      `• Total acordado: ${m(c.total)}`,
+      `• Fecha de pago: ${dateNumeric(loan.dueDate)}`,
+    );
+  }
+  if (c.mora && loan.mode === 'installments') {
+    lines.push(`• Mora total: ${m(c.mora)}`);
+  } else if (c.mora) {
     if (c.moraSegments.length === 1) lines.push(`• Mora: ${plural(c.moraDays, 'día', 'días')} × ${m(c.moraSegments[0].fee)} = ${m(c.mora)}`);
     else {
       lines.push(`• Mora: ${m(c.mora)}`);
@@ -1598,14 +1784,19 @@ document.addEventListener('submit', (e) => {
 function refreshFeeForm(form) {
   updateWhen(form);
   const loan = loanById(new FormData(form).get('loanId'));
-  if (loan) updateRatePreview(form, loan.capital, loan.currency);
+  if (loan) updateRatePreview(form, ...feeBase(loan));
 }
+
+/** Si cambió un dato del generador de cuotas (cantidad, monto, primera fecha, frecuencia), rearmarlas. */
+const isGenField = (el) => el.hasAttribute('data-gen') || el.name === 'genFreq';
 
 document.addEventListener('input', (e) => {
   const feeForm = e.target.closest('form[data-form="fee"]');
   if (feeForm) return refreshFeeForm(feeForm);
   const form = e.target.closest('form[data-form="loan"]');
-  if (form) updateLoanForm(form);
+  if (!form) return;
+  if (isGenField(e.target)) regenerateInstallments(form);
+  updateLoanForm(form);
 });
 
 document.addEventListener('change', (e) => {
@@ -1613,7 +1804,9 @@ document.addEventListener('change', (e) => {
   const feeForm = e.target.closest('form[data-form="fee"]');
   if (feeForm) return refreshFeeForm(feeForm);
   const form = e.target.closest('form[data-form="loan"]');
-  if (form) updateLoanForm(form);
+  if (!form) return;
+  if (isGenField(e.target)) regenerateInstallments(form);
+  updateLoanForm(form);
 });
 
 $sheet.addEventListener('click', (e) => {

@@ -667,6 +667,23 @@ label.row:active {
   font-weight: 600;
 }
 
+/* Filas etiqueta/valor: la etiqueta mantiene su ancho y el valor largo pasa a otra línea. */
+.row--kv .row-main {
+  flex: 0 0 auto;
+  max-width: 50%;
+}
+
+.row--kv .row-end {
+  flex: 1 1 0;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.row--kv .row-value {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .row-chevron {
   width: 1.125rem;
   height: 1.125rem;
@@ -976,6 +993,43 @@ details.field summary::after {
 
 details.field[open] summary::after {
   transform: rotate(90deg);
+}
+
+.inst-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-top: 0.375rem;
+}
+
+.inst-row {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1.2fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inst-n {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.field .inst-row input:not([type='checkbox']) {
+  padding: 0.375rem 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.field .inst-row input[inputmode='decimal'] {
+  text-align: right;
+}
+
+.field .segmented .segment > span {
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
 }
 
 .check {
