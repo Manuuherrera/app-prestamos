@@ -25,6 +25,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 - **Cambiar la mora:** desde el detalle, *Cambiar mora* tiene dos opciones (y se puede pasar de monto fijo a porcentaje):
   - **Desde una fecha** (por ejemplo, hoy): lo que ya se generó queda igual y la nueva tarifa corre desde ese día. El detalle muestra la mora separada por tramos.
   - **Todo el préstamo:** recalcula toda la mora con la nueva tarifa, también la de los días pasados.
+- **Reparto del interés (opcional):** si un amigo se lleva parte del interés, se carga en el préstamo: con porcentaje, sus puntos (de 60 %, él 10 % y vos 50 %); con interés diario, su parte por día (de $10.000, él $4.000 y vos $6.000). No cambia el capital ni lo que te debe el deudor; solo divide la ganancia. La mora es toda tuya salvo que marques que también le toca (en la misma proporción). El detalle muestra tu ganancia y la de él; los reportes, tu ganancia neta y la parte de terceros. No aparece en el resumen de WhatsApp.
 - **Préstamos viejos:** se cargan con fechas pasadas. El campo opcional *Cobrar mora desde* sirve para empezar a contar la mora desde una fecha posterior al vencimiento.
 - **Pagos parciales:** con fecha, monto y nota. Se pueden editar o borrar.
 - **Estados automáticos:** Al día · Vence pronto (3 días o menos) · Vencido (corre mora) · Pagado · Condonado (manual, se puede revertir).
