@@ -892,7 +892,7 @@ label.row:active {
   margin: 0;
 }
 
-.field input:not([type='radio']):not([type='file']),
+.field input:not([type='radio']):not([type='file']):not([type='checkbox']),
 .field select,
 .field textarea {
   display: block;
@@ -976,6 +976,28 @@ details.field summary::after {
 
 details.field[open] summary::after {
   transform: rotate(90deg);
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.75rem 0 0.25rem;
+  font-size: 0.9375rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.05rem 0 0;
+  accent-color: var(--accent);
+}
+
+.preview--partner {
+  margin: 0.75rem 0 0.25rem;
 }
 
 .hint--sheet {

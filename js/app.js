@@ -23,7 +23,7 @@ import { money, dateLong, dateShort, dateNumeric, parseAmount, amountForInput, p
 // ---------------------------------------------------------------------------
 
 // Subir junto con CACHE en sw.js en cada publicación.
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 let db = store.load();
 const ui = {
@@ -445,6 +445,16 @@ function loanDetailView(loan) {
     { title: 'Resumen' },
   );
 
+  const partnerGroup = c.partnerTotal
+    ? group(
+        `
+        ${kv('Tu ganancia', `<strong>${m(c.myProfit)}</strong>`, 'row--total')}
+        ${kv(`Parte de ${esc(c.partnerName)}`, `${m(c.partnerTotal)}${c.partnerMora ? ` <small>(${m(c.partnerInterest)} + ${m(c.partnerMora)} de mora)</small>` : ''}`)}
+        ${kv('Su parte acordada', loan.mode === 'daily' ? `${m(loan.partner.value)} por día` : `${amountForInput(loan.partner.value)} % de ${amountForInput(loan.percent)} %`)}`,
+        { title: 'Reparto de la ganancia', footer: loan.partner.includeMora ? 'También le toca parte de la mora, en la misma proporción que el interés.' : 'La mora es toda tuya.' },
+      )
+    : '';
+
   const segmentsGroup =
     c.moraSegments.length > 1
       ? group(
@@ -527,7 +537,7 @@ function loanDetailView(loan) {
     title: 'Préstamo',
     back: { href: '#/', label: 'Préstamos' },
     right: `<a class="nav-text tappable" href="#/prestamo/${loan.id}/editar">Editar</a>`,
-    body: `${hero}${callout}${summary}${segmentsGroup}${paymentsGroup}${dates}${notes}${actions}`,
+    body: `${hero}${callout}${summary}${partnerGroup}${segmentsGroup}${paymentsGroup}${dates}${notes}${actions}`,
     loanId: loan.id,
   };
 }
@@ -645,6 +655,34 @@ function loanFormView(loan, presetPersonId) {
         },
       )}
 
+      <div data-when="direction:lent">
+        ${group(
+          `
+          <details class="field" ${l.partner ? 'open' : ''}>
+            <summary>¿Compartís el interés con alguien?</summary>
+            <label class="field field--nested">
+              <span class="field-label">Nombre</span>
+              <input name="partnerName" type="text" list="people-names" placeholder="Ej.: Juan (el que lo trajo)" value="${esc(l.partner?.name || '')}" autocapitalize="words">
+              <datalist id="people-names">${people.map((p) => `<option value="${esc(p.name)}">`).join('')}</datalist>
+            </label>
+            <label class="field field--nested" data-when="mode:percent">
+              <span class="field-label">Su parte del interés (puntos del %)</span>
+              <span class="input-affix"><input name="partnerPct" type="text" inputmode="decimal" placeholder="Ej.: 10" value="${l.partner && l.mode === 'percent' ? amountForInput(l.partner.value) : ''}"><span>%</span></span>
+            </label>
+            <label class="field field--nested" data-when="mode:daily">
+              <span class="field-label">Su parte por día</span>
+              <input name="partnerDaily" type="text" inputmode="decimal" placeholder="Ej.: 4000" value="${l.partner && l.mode === 'daily' ? amountForInput(l.partner.value) : ''}">
+            </label>
+            <label class="check">
+              <input name="partnerMora" type="checkbox" ${l.partner?.includeMora ? 'checked' : ''}>
+              <span>También le toca parte de la mora (en la misma proporción)</span>
+            </label>
+            <output class="preview preview--partner" aria-live="polite" hidden></output>
+          </details>`,
+          { title: 'Reparto', footer: 'No cambia lo que te deben ni el capital: solo divide la ganancia. No aparece en el resumen que mandás por WhatsApp.' },
+        )}
+      </div>
+
       ${group(
         `<label class="field"><span class="field-label">Notas</span><textarea name="notes" rows="3" placeholder="Opcional: para qué fue, acuerdos, etc.">${esc(l.notes)}</textarea></label>`,
       )}
@@ -682,7 +720,17 @@ function readLoanForm(form) {
     lateFee: readRate(f),
     lateFeeFrom: f.get('lateFeeFrom') || null,
     notes: String(f.get('notes') || '').trim(),
+    partner: readPartner(f),
   };
+}
+
+/** Reparto del interés: null si no hay (campo vacío o en cero, o si el préstamo es "Me prestaron"). */
+function readPartner(f) {
+  if (f.get('direction') !== 'lent') return null;
+  const raw = String(f.get(f.get('mode') === 'daily' ? 'partnerDaily' : 'partnerPct') || '').trim();
+  if (!raw) return null;
+  const value = parseAmount(raw);
+  return { name: String(f.get('partnerName') || '').trim(), value, includeMora: f.get('partnerMora') === 'on' };
 }
 
 function validateLoan(v) {
@@ -698,6 +746,12 @@ function validateLoan(v) {
     if (v.dueDate <= v.startDate) return 'La fecha de pago tiene que ser posterior a la fecha de inicio.';
   }
   if (Number.isNaN(v.lateFee.value) || v.lateFee.value < 0) return 'El valor de la mora no es válido.';
+  if (v.partner) {
+    if (Number.isNaN(v.partner.value) || v.partner.value < 0) return 'La parte del interés que se lleva el otro no es válida.';
+    if (!v.partner.name) return 'Escribí el nombre de con quién compartís el interés.';
+    const max = v.mode === 'daily' ? v.dailyAmount : v.percent;
+    if (v.partner.value > max) return v.mode === 'daily' ? 'Su parte por día no puede ser mayor que el interés diario.' : 'Su parte no puede ser mayor que el porcentaje total.';
+  }
   return '';
 }
 
@@ -719,6 +773,30 @@ function updateLoanForm(form) {
     const t = loanTerms(v);
     html = `<strong>Total a devolver: ${money(t.total, cur)}</strong>
       <span>Interés: ${money(t.interest, cur)}${days > 0 ? ` en ${plural(days, 'día', 'días')}` : ''}</span>`;
+  }
+  out.innerHTML = html;
+  out.hidden = !html;
+  updatePartnerPreview(form, v);
+}
+
+/** "Vos: $ 50.000 · Juan: $ 10.000" debajo del reparto. */
+function updatePartnerPreview(form, v) {
+  const out = form.querySelector('.preview--partner');
+  if (!out) return;
+  let html = '';
+  const p = v.partner;
+  if (p && p.value > 0 && v.capital > 0) {
+    const t = loanTerms({ ...v, capital: v.capital });
+    const days = Math.max(0, diffDays(v.startDate, v.dueDate));
+    const theirs = Math.min(t.interest, v.mode === 'daily' ? p.value * days : (v.capital * p.value) / 100);
+    const mine = t.interest - theirs;
+    const cur = v.currency;
+    const lbl = v.mode === 'daily' ? (x) => `${money(x / Math.max(days, 1), cur)} por día` : (x) => `${amountForInput(round2((x / v.capital) * 100))} %`;
+    if (t.interest > 0) {
+      html = `<strong>Vos: ${money(mine, cur)} <small>(${lbl(mine)})</small></strong>
+        <span>${esc(p.name || 'El otro')}: ${money(theirs, cur)} <small>(${lbl(theirs)})</small></span>
+        <span class="hint">El deudor igual te devuelve ${money(t.total, cur)}.</span>`;
+    }
   }
   out.innerHTML = html;
   out.hidden = !html;
@@ -754,6 +832,7 @@ function saveLoan(form) {
     lateFee: v.lateFee,
     lateFeeFrom: v.lateFeeFrom,
     notes: v.notes,
+    partner: v.partner && v.partner.value > 0 ? v.partner : null,
   };
   let loanId;
   if (existing) {
@@ -1124,7 +1203,7 @@ function reportsView() {
   if (lent.length) {
     const hero = `
       <section class="summary">
-        <p class="summary-label">Ganancia cobrada</p>
+        <p class="summary-label">${r.partnerRealized || r.partnerPending ? 'Tu ganancia cobrada' : 'Ganancia cobrada'}</p>
         <p class="summary-amount is-accent">${m(r.realized)}</p>
         <p class="summary-meta">Sobre ${m(r.invested)} prestados · rendimiento ${pctFmt.format(r.roi)}</p>
       </section>`;
@@ -1138,6 +1217,7 @@ function reportsView() {
         ${stat('Ganancia por cobrar', m(r.pending), 'Interés + mora a hoy')}
         ${stat('Rendimiento esperado', pctFmt.format(r.expectedRoi), 'Si se cobra todo')}
         ${stat('Mora generada', m(r.mora), 'Incluida en lo anterior')}
+        ${r.partnerRealized || r.partnerPending ? stat('Parte de terceros', m(r.partnerRealized + r.partnerPending), `Cobrado: ${m(r.partnerRealized)}`) : ''}
         ${r.lost || r.forgivenProfit ? stat('Condonado', m(r.lost + r.forgivenProfit), `Capital perdido: ${m(r.lost)}`, 'stat--warn') : ''}
       </div>`;
 
@@ -1209,7 +1289,7 @@ function reportsView() {
       ${curs.length > 1 ? segmented('cur', curs.map((x) => [x, x === 'ARS' ? 'Pesos' : 'Dólares']), cur, { action: 'set-report-cur' }) : ''}
       ${lentSection || (borrowed.length ? '' : emptyState('Sin préstamos en esta moneda', ''))}
       ${borrowedSection}
-      <p class="about">La ganancia se calcula considerando que cada pago cubre primero el capital y después el interés y la mora.</p>`,
+      <p class="about">La ganancia se calcula considerando que cada pago cubre primero el capital y después el interés y la mora. Si compartís el interés con alguien, tu ganancia ya tiene descontada su parte.</p>`,
   };
 }
 
