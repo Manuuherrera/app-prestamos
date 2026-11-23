@@ -35,12 +35,108 @@ export const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
  * - percent: total = capital × (1 + % / 100), a devolver en la fecha acordada.
  * - daily:   interés fijo por día (desde el día siguiente al inicio hasta la fecha acordada, inclusive);
  *            total = capital + interés diario × días. Se devuelve todo junto en la fecha acordada.
+ * - installments: cuotas con fecha y monto (el monto ya incluye capital + interés);
+ *            total = suma de las cuotas, interés = total − capital. Vence con la última cuota.
  */
 export function loanTerms(loan) {
+  if (loan.mode === 'installments') {
+    const list = sortedInstallments(loan);
+    const total = round2(list.reduce((s, q) => s + q.amount, 0));
+    const last = list.length ? list[list.length - 1].date : loan.dueDate;
+    return { days: Math.max(0, diffDays(loan.startDate, last)), total, interest: round2(total - loan.capital), count: list.length };
+  }
   const days = Math.max(0, diffDays(loan.startDate, loan.dueDate));
   const interest =
     loan.mode === 'daily' ? round2((loan.dailyAmount || 0) * days) : round2((loan.capital * (loan.percent || 0)) / 100);
   return { days, total: round2(loan.capital + interest), interest };
+}
+
+// --- Cuotas ---------------------------------------------------------------
+
+export const sortedInstallments = (loan) =>
+  (loan.installments || []).slice().sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+/** Suma meses respetando fin de mes (31/1 + 1 mes = 28/2 o 29/2). */
+export function addMonths(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const target = new Date(Date.UTC(y, m - 1 + n, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(d, lastDay));
+  return target.toISOString().slice(0, 10);
+}
+
+export const FREQUENCIES = { weekly: 7, biweekly: 15, monthly: 'month', custom: 'custom' };
+
+/** Fechas de las cuotas a partir de la primera, según la frecuencia. */
+export function scheduleDates(first, count, freq, everyDays = 30) {
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    if (freq === 'monthly') out.push(addMonths(first, i));
+    else out.push(addDays(first, i * (freq === 'weekly' ? 7 : freq === 'biweekly' ? 15 : Math.max(1, everyDays))));
+  }
+  return out;
+}
+
+/**
+ * Mora de un préstamo en cuotas. Los pagos cubren las cuotas en orden (la más vieja primero).
+ * Cada cuota empieza a generar mora el día siguiente a que termina su margen (fecha + días de gracia),
+ * o desde "cobrar mora desde" si es posterior. Por cada día en que la cuota tiene algo impago:
+ * - tarifa fija: se suma el monto diario completo;
+ * - tarifa en %: el % se calcula sobre lo que falta pagar de esa cuota.
+ */
+function installmentMora(loan, payments, until, changes) {
+  const list = sortedInstallments(loan);
+  const grace = Math.max(0, Math.floor(loan.graceDays || 0));
+  let acc = 0;
+  const items = list.map((q, i) => {
+    acc += q.amount;
+    let start = addDays(q.date, grace + 1);
+    if (loan.lateFeeFrom && loan.lateFeeFrom > start) start = loan.lateFeeFrom;
+    return { n: i + 1, id: q.id, date: q.date, amount: q.amount, cum: round2(acc), graceUntil: addDays(q.date, grace), start, mora: 0, days: 0 };
+  });
+  let mora = 0;
+  let moraDays = 0;
+  let lastDayFee = 0;
+  const segments = [];
+  const firstStart = items.reduce((min, it) => (it.start < min ? it.start : min), '9999-12-31');
+  if (items.length && firstStart <= until) {
+    let pi = 0;
+    let paidBefore = 0;
+    const end = dayNumber(until);
+    for (let d = dayNumber(firstStart); d <= end; d++) {
+      while (pi < payments.length && dayNumber(payments[pi].date) < d) {
+        paidBefore += payments[pi].amount;
+        pi++;
+      }
+      const iso = fromDayNumber(d);
+      const r = rateOn(loan, iso, changes);
+      let dayFee = 0;
+      for (const it of items) {
+        if (it.start > iso) continue;
+        const remaining = Math.min(it.amount, Math.max(0, it.cum - paidBefore));
+        if (remaining <= EPS) continue;
+        const perPeriod = r.type === 'percent' ? (remaining * r.value) / 100 : r.value;
+        const fee = round2(perPeriod / PERIOD_DAYS[r.period]);
+        if (fee <= 0) continue;
+        it.mora = round2(it.mora + fee);
+        it.days++;
+        dayFee = round2(dayFee + fee);
+      }
+      if (d === end) lastDayFee = dayFee;
+      if (dayFee <= 0) continue;
+      mora += dayFee;
+      moraDays++;
+      const last = segments[segments.length - 1];
+      if (last && last.fee === dayFee && dayNumber(last.to) === d - 1) {
+        last.to = iso;
+        last.days++;
+        last.subtotal = round2(last.subtotal + dayFee);
+      } else {
+        segments.push({ from: iso, to: iso, days: 1, fee: dayFee, rate: r, subtotal: dayFee });
+      }
+    }
+  }
+  return { mora: round2(mora), moraDays, segments, items, currentFee: lastDayFee, moraFrom: items.length ? firstStart : loan.dueDate };
 }
 
 /** Primer día en que corre la mora: el día siguiente al vencimiento, o "cobrar mora desde" si es posterior. */
@@ -114,6 +210,7 @@ export function computeLoan(loan, asOf = todayISO()) {
   const forgiven = Boolean(loan.forgivenAt);
   const moraUntil = forgiven && loan.forgivenAt < asOf ? loan.forgivenAt : asOf;
   const changes = feeChanges(loan);
+  if (loan.mode === 'installments') return computeInstallmentLoan(loan, asOf, terms, payments, paid, forgiven, moraUntil, changes);
   const anyFee = dailyFee(loan, baseRate(loan)) > 0 || changes.some((ch) => dailyFee(loan, ch.rate) > 0);
   const moraFrom = lateFeeStart(loan);
 
@@ -182,6 +279,59 @@ export function computeLoan(loan, asOf = todayISO()) {
     daysOverdue: status === 'overdue' ? -daysToDue : 0,
     lastPayment,
     progress: owed > 0 ? Math.min(1, paid / owed) : 1,
+  };
+}
+
+/** Estado de un préstamo en cuotas (misma forma que computeLoan, más el detalle de cada cuota). */
+function computeInstallmentLoan(loan, asOf, terms, payments, paid, forgiven, moraUntil, changes) {
+  const m = installmentMora(loan, payments, moraUntil, changes);
+  const owed = round2(terms.total + m.mora);
+  const balance = round2(owed - paid);
+
+  // Estado de cada cuota según lo pagado hasta hoy (las más viejas primero).
+  const installments = m.items.map((it) => {
+    const remaining = round2(Math.min(it.amount, Math.max(0, it.cum - paid)));
+    let state;
+    if (remaining <= EPS) state = 'paid';
+    else if (asOf > it.graceUntil) state = 'late';
+    else if (asOf > it.date) state = 'grace';
+    else state = 'pending';
+    return { ...it, remaining, covered: round2(it.amount - remaining), state, daysLate: state === 'late' ? diffDays(it.graceUntil, asOf) : 0 };
+  });
+  const next = installments.find((q) => q.state !== 'paid') || null;
+  const late = installments.filter((q) => q.state === 'late');
+
+  let status;
+  if (forgiven) status = 'forgiven';
+  else if (balance <= EPS) status = 'paid';
+  else if (late.length) status = 'overdue';
+  else if (next && (next.state === 'grace' || diffDays(asOf, next.date) <= 3)) status = 'dueSoon';
+  else status = 'current';
+
+  const lastPayment = payments.length ? payments[payments.length - 1].date : null;
+  const refDate = next ? next.date : loan.dueDate;
+  const daysToDue = diffDays(asOf, refDate);
+  return {
+    ...terms,
+    partnerName: '', partnerInterest: 0, partnerMora: 0, partnerTotal: 0,
+    myProfit: round2(owed - loan.capital),
+    paid,
+    mora: m.mora,
+    moraDays: m.moraDays,
+    moraFrom: m.moraFrom,
+    moraSegments: m.segments,
+    currentFee: m.currentFee,
+    currentRate: rateOn(loan, asOf, changes),
+    owed,
+    balance,
+    status,
+    daysToDue,
+    daysOverdue: status === 'overdue' ? diffDays(late[0].date, asOf) : 0,
+    lastPayment,
+    progress: owed > 0 ? Math.min(1, paid / owed) : 1,
+    installments,
+    nextInstallment: next,
+    lateCount: late.length,
   };
 }
 

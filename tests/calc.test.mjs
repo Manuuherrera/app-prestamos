@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeLoan, loanTerms, totalsByCurrency, lateFeeStart, feeOn, profitReport, paymentsByMonth } from '../js/calc.js';
+import { computeLoan, loanTerms, totalsByCurrency, lateFeeStart, feeOn, profitReport, paymentsByMonth, scheduleDates } from '../js/calc.js';
 import { parseAmount, money } from '../js/format.js';
 
 const base = {
@@ -230,6 +230,75 @@ test('reporte con reparto: tu ganancia y la de terceros son proporcionales a lo 
   assert.equal(r.pending, 25000);
   assert.equal(r.partnerPending, 5000);
   assert.equal(r.invested, 100000); // el capital no cambia
+});
+
+// --- Cuotas -------------------------------------------------------------------
+const cuotas = (over = {}) =>
+  loan({
+    mode: 'installments',
+    capital: 100000,
+    startDate: '2026-01-05',
+    dueDate: '2026-04-01',
+    graceDays: 5,
+    lateFeePerDay: 1000,
+    installments: [
+      { id: 'q1', date: '2026-02-01', amount: 40000 },
+      { id: 'q2', date: '2026-03-01', amount: 40000 },
+      { id: 'q3', date: '2026-04-01', amount: 40000 },
+    ],
+    ...over,
+  });
+
+test('cuotas: fechas mensuales respetan fin de mes', () => {
+  assert.deepEqual(scheduleDates('2026-01-31', 3, 'monthly'), ['2026-01-31', '2026-02-28', '2026-03-31']);
+  assert.deepEqual(scheduleDates('2026-01-01', 3, 'weekly'), ['2026-01-01', '2026-01-08', '2026-01-15']);
+  assert.deepEqual(scheduleDates('2026-01-01', 2, 'custom', 10), ['2026-01-01', '2026-01-11']);
+});
+
+test('cuotas: total = suma de cuotas, ganancia = total − capital', () => {
+  const t = loanTerms(cuotas());
+  assert.equal(t.total, 120000);
+  assert.equal(t.interest, 20000);
+  assert.equal(t.count, 3);
+});
+
+test('cuotas: dentro del margen no hay mora', () => {
+  const c = computeLoan(cuotas(), '2026-02-06'); // vence 1/2, margen hasta el 6/2
+  assert.equal(c.mora, 0);
+  assert.equal(c.status, 'dueSoon');
+  assert.equal(c.installments[0].state, 'grace');
+});
+
+test('cuotas: la mora corre desde que termina el margen', () => {
+  const c = computeLoan(cuotas(), '2026-02-09'); // 7, 8 y 9 de febrero
+  assert.equal(c.mora, 3000);
+  assert.equal(c.status, 'overdue');
+  assert.equal(c.installments[0].state, 'late');
+  assert.equal(c.installments[0].daysLate, 3);
+  assert.equal(c.balance, 123000);
+});
+
+test('cuotas: pagar la cuota atrasada corta su mora', () => {
+  const c = computeLoan(cuotas({ payments: [{ id: 'p', date: '2026-02-08', amount: 40000 }] }), '2026-02-20');
+  assert.equal(c.mora, 2000); // 7 y 8 de febrero
+  assert.equal(c.installments[0].state, 'paid');
+  assert.equal(c.status, 'current');
+  assert.equal(c.nextInstallment.n, 2);
+});
+
+test('cuotas: con dos atrasadas se cobra por cada una', () => {
+  const c = computeLoan(cuotas(), '2026-03-08');
+  // Cuota 1: del 7/2 al 8/3 = 30 días. Cuota 2: 7/3 y 8/3 = 2 días.
+  assert.equal(c.installments[0].mora, 30000);
+  assert.equal(c.installments[1].mora, 2000);
+  assert.equal(c.mora, 32000);
+  assert.equal(c.lateCount, 2);
+});
+
+test('cuotas: mora en % se calcula sobre lo que falta de la cuota', () => {
+  const l = cuotas({ lateFee: { type: 'percent', value: 1, period: 'day' }, payments: [{ id: 'p', date: '2026-02-01', amount: 20000 }] });
+  const c = computeLoan(l, '2026-02-08'); // falta 20.000 de la cuota 1 → 200 por día, 2 días
+  assert.equal(c.mora, 400);
 });
 
 test('cobros por mes', () => {
