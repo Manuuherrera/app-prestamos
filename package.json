@@ -1,0 +1,10 @@
+{
+  "name": "app-prestamos",
+  "private": true,
+  "description": "PWA para registrar préstamos y deudas en el teléfono. Sin dependencias.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/",
+    "serve": "python -m http.server 8080"
+  }
+}

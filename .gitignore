@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/
+# Backups exportados desde la app: tienen datos personales, no van al repo
+prestamos-backup-*.json
