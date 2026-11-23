@@ -38,7 +38,6 @@ const CURRENCIES = ['ARS', 'USD'];
 
 const STATUS = {
   overdue: { label: 'Vencido', tone: 'red' },
-  behind: { label: 'Atrasado', tone: 'orange' },
   dueSoon: { label: 'Vence pronto', tone: 'yellow' },
   current: { label: 'Al día', tone: 'blue' },
   paid: { label: 'Pagado', tone: 'green' },
@@ -215,7 +214,6 @@ function dueText(loan, c, asOf) {
   if (c.status === 'paid') return c.lastPayment ? `Pagado el ${dateShort(c.lastPayment, asOf)}` : 'Pagado';
   if (c.status === 'forgiven') return `Condonado el ${dateShort(loan.forgivenAt, asOf)}`;
   if (c.status === 'overdue') return `Venció hace ${plural(c.daysOverdue, 'día', 'días')}`;
-  if (c.status === 'behind') return `Debe ${plural(Math.max(1, c.installmentsBehind), 'cuota', 'cuotas')}`;
   if (c.daysToDue === 0) return 'Vence hoy';
   if (c.daysToDue === 1) return 'Vence mañana';
   return `Vence el ${dateShort(loan.dueDate, asOf)}`;
@@ -410,11 +408,6 @@ function loanDetailView(loan) {
       <strong>Venció hace ${plural(c.daysOverdue, 'día', 'días')}.</strong>
       ${c.currentFee ? `Corre una mora de ${rateLabel(c.currentRate, cur)}${c.currentRate.type === 'fixed' && c.currentRate.period === 'day' ? '' : ` (${m(c.currentFee)} por día)`}${c.moraFrom > asOf ? ` desde el ${dateShort(c.moraFrom, asOf)}` : ''}.` : c.mora ? 'Ahora no corre mora.' : 'No tiene mora acordada.'}
     </div>`;
-  } else if (c.status === 'behind') {
-    callout = `<div class="callout callout--orange">
-      <strong>Atrasado en ${plural(Math.max(1, c.installmentsBehind), 'cuota', 'cuotas')}.</strong>
-      A hoy debería ${loan.direction === 'lent' ? 'haberte pagado' : 'haber recibido'} ${m(c.expected)} y lleva ${m(c.paid)}. Faltan ${m(c.behindBy)}.
-    </div>`;
   } else if (c.status === 'dueSoon') {
     callout = `<div class="callout callout--yellow"><strong>${c.daysToDue === 0 ? 'Vence hoy.' : c.daysToDue === 1 ? 'Vence mañana.' : `Vence en ${c.daysToDue} días.`}</strong> ${c.currentFee ? `Después corre una mora de ${rateLabel(c.currentRate, cur)}.` : ''}</div>`;
   }
@@ -433,8 +426,8 @@ function loanDetailView(loan) {
 
   const terms =
     loan.mode === 'daily'
-      ? kv('Cuota diaria', `${m(loan.dailyAmount)} × ${c.installments}`)
-      : kv('Interés', `${amountForInput(loan.percent)} %`);
+      ? kv('Interés', `${m(loan.dailyAmount)} × ${plural(c.days, 'día', 'días')} = ${m(c.interest)}`)
+      : kv('Interés', `${amountForInput(loan.percent)} % = ${m(c.interest)}`);
 
   const summary = group(
     `
@@ -468,7 +461,7 @@ function loanDetailView(loan) {
   const dates = group(
     `
       ${kv('Fecha de inicio', dateLong(loan.startDate))}
-      ${kv(loan.mode === 'daily' ? 'Última cuota' : 'Fecha de pago', dateLong(loan.dueDate))}
+      ${kv('Fecha de pago', dateLong(loan.dueDate))}
       ${kv(changes.length ? 'Mora inicial' : 'Mora', rateLabel(baseRate(loan), cur))}
       ${changes
         .map(
@@ -609,19 +602,18 @@ function loanFormView(loan, presetPersonId) {
       ${group(
         `
         <div class="field">
-          ${segmented('mode', [['percent', 'Con porcentaje'], ['daily', 'Cuota diaria']], l.mode, { form: true })}
+          ${segmented('mode', [['percent', 'Porcentaje total'], ['daily', 'Interés diario']], l.mode, { form: true })}
         </div>
         <label class="field" data-when="mode:percent">
           <span class="field-label">Interés total</span>
           <span class="input-affix"><input name="percent" type="text" inputmode="decimal" placeholder="0" value="${amountForInput(l.percent)}"><span>%</span></span>
         </label>
         <label class="field" data-when="mode:daily">
-          <span class="field-label">Cuota por día</span>
+          <span class="field-label">Interés por día</span>
           <input name="dailyAmount" type="text" inputmode="decimal" placeholder="0" value="${amountForInput(l.dailyAmount)}">
         </label>
         <label class="field">
-          <span class="field-label" data-when="mode:percent">Fecha de pago acordada</span>
-          <span class="field-label" data-when="mode:daily">Fecha de la última cuota</span>
+          <span class="field-label">Fecha de pago acordada</span>
           <input name="dueDate" type="date" value="${l.dueDate}" required>
         </label>
         <output class="preview" name="preview" aria-live="polite"></output>`,
@@ -699,8 +691,8 @@ function validateLoan(v) {
     if (Number.isNaN(v.percent) || v.percent < 0) return 'El porcentaje no es válido.';
     if (v.dueDate < v.startDate) return 'La fecha de pago no puede ser anterior al inicio.';
   } else {
-    if (!(v.dailyAmount > 0)) return 'La cuota diaria tiene que ser mayor a cero.';
-    if (v.dueDate <= v.startDate) return 'La última cuota tiene que ser posterior a la fecha de inicio.';
+    if (!(v.dailyAmount > 0)) return 'El interés por día tiene que ser mayor a cero.';
+    if (v.dueDate <= v.startDate) return 'La fecha de pago tiene que ser posterior a la fecha de inicio.';
   }
   if (Number.isNaN(v.lateFee.value) || v.lateFee.value < 0) return 'El valor de la mora no es válido.';
   return '';
@@ -716,10 +708,10 @@ function updateLoanForm(form) {
   const days = v.startDate && v.dueDate ? diffDays(v.startDate, v.dueDate) : 0;
   let html = '';
   if (v.mode === 'daily' && v.dailyAmount > 0 && days > 0) {
-    const t = loanTerms({ ...v, capital: v.capital || 0 });
-    html = `<span>${plural(t.installments, 'cuota', 'cuotas')} de ${money(v.dailyAmount, cur)}</span>
-      <strong>Total a devolver: ${money(t.total, cur)}</strong>
-      ${v.capital > 0 ? `<span class="${t.interest < 0 ? 'is-red' : ''}">${t.interest >= 0 ? 'Ganancia' : 'Pierde'}: ${money(Math.abs(t.interest), cur)}</span>` : ''}`;
+    const t = loanTerms({ ...v, capital: v.capital > 0 ? v.capital : 0 });
+    html = `<span>Interés: ${plural(days, 'día', 'días')} × ${money(v.dailyAmount, cur)} = ${money(t.interest, cur)}</span>
+      ${v.capital > 0 ? `<strong>Total a devolver: ${money(t.total, cur)}</strong><span>Capital ${money(v.capital, cur)} + interés ${money(t.interest, cur)}, el ${dateShort(v.dueDate, todayISO())}</span>` : ''}
+      <span class="hint">Se cuenta desde el día siguiente al préstamo (${dateShort(addDays(v.startDate, 1), todayISO())}) hasta la fecha de pago, inclusive.</span>`;
   } else if (v.mode === 'percent' && v.capital > 0 && !Number.isNaN(v.percent)) {
     const t = loanTerms(v);
     html = `<strong>Total a devolver: ${money(t.total, cur)}</strong>
@@ -797,8 +789,6 @@ function paymentSheet(loan, payment) {
   const suggestions = [];
   if (!payment) {
     if (c.balance > 0) suggestions.push(['Saldo total', c.balance]);
-    if (loan.mode === 'daily' && loan.dailyAmount > 0 && loan.dailyAmount < c.balance) suggestions.push(['Una cuota', loan.dailyAmount]);
-    if (c.behindBy > 0 && c.behindBy < c.balance && c.behindBy !== loan.dailyAmount) suggestions.push(['Ponerse al día', c.behindBy]);
   }
   openSheet(`
     <form class="form sheet-form" data-form="payment" method="dialog" novalidate>
@@ -1318,9 +1308,10 @@ function shareLoan(loan) {
     '',
     `• Capital: ${m(loan.capital)} (desde el ${dateNumeric(loan.startDate)})`,
     loan.mode === 'daily'
-      ? `• ${c.installments} cuotas diarias de ${m(loan.dailyAmount)} = ${m(c.total)}`
-      : `• Total acordado: ${m(c.total)} (${amountForInput(loan.percent)} % de interés)`,
-    `• ${loan.mode === 'daily' ? 'Última cuota' : 'Fecha de pago'}: ${dateNumeric(loan.dueDate)}`,
+      ? `• Interés: ${plural(c.days, 'día', 'días')} × ${m(loan.dailyAmount)} = ${m(c.interest)}`
+      : `• Interés: ${amountForInput(loan.percent)} % = ${m(c.interest)}`,
+    `• Total acordado: ${m(c.total)}`,
+    `• Fecha de pago: ${dateNumeric(loan.dueDate)}`,
   ];
   if (c.mora) {
     if (c.moraSegments.length === 1) lines.push(`• Mora: ${plural(c.moraDays, 'día', 'días')} × ${m(c.moraSegments[0].fee)} = ${m(c.mora)}`);
@@ -1331,7 +1322,6 @@ function shareLoan(loan) {
   }
   lines.push(`• Pagado: ${m(c.paid)}`);
   lines.push(c.status === 'paid' ? '• Saldado ✅' : `• *Saldo a hoy: ${m(Math.max(0, c.balance))}*`);
-  if (c.status === 'behind') lines.push(`• Atraso en cuotas: ${m(c.behindBy)}`);
   const text = encodeURIComponent(lines.join('\n'));
   const digits = phoneDigits(person?.phone);
   window.open(`https://wa.me/${digits}?text=${text}`, '_blank', 'noopener');
