@@ -48,6 +48,10 @@ export function normalize(raw) {
         .map((ch) => ({ id: String(ch.id || uid()), from: ch.from, rate: asRate(ch.rate ?? ch.amount) }))
         .filter((ch) => ch.rate.value >= 0),
       forgivenAt: isIso(l.forgivenAt) ? l.forgivenAt : null,
+      partner:
+        l.partner && num(l.partner.value) > 0
+          ? { name: String(l.partner.name || '').trim(), value: num(l.partner.value), includeMora: Boolean(l.partner.includeMora) }
+          : null,
       notes: l.notes || '',
       createdAt: l.createdAt || new Date().toISOString(),
       payments: (Array.isArray(l.payments) ? l.payments : [])
