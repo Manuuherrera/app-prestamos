@@ -79,4 +79,4 @@ scripts/              Generador de íconos
 
 ### Publicar cambios
 
-GitHub Pages publica cada push a `main`. El service worker sirve primero la versión en caché y se actualiza en segundo plano, así que los cambios se ven la segunda vez que se abre la app. Si cambiás la lista de archivos, subí `CACHE` en `sw.js` (`prestamos-v2`, …).
+GitHub Pages publica cada push a `main` (tarda 1–2 minutos). El service worker busca primero la versión publicada y usa la copia guardada solo sin internet, así que los cambios se ven al reabrir la app. En cada publicación subí `CACHE` en `sw.js` y `APP_VERSION` en `js/app.js`. Si el teléfono queda con una versión vieja: *Ajustes → Buscar actualización* (no borra los datos).
