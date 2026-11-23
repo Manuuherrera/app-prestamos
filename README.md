@@ -20,11 +20,22 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
   - **Con porcentaje:** total = capital + %, a devolver en la fecha acordada. Ej.: $100.000 al 20 % → $120.000.
   - **Cuota diaria:** una cuota fija por día, desde el día siguiente al inicio hasta la fecha de la última cuota. Total = cuota × días.
 - **Mora:** un monto fijo por cada día de atraso después de la fecha acordada, mientras quede saldo. Si se paga todo, deja de correr.
+- **Cambiar la mora:** desde el detalle, *Cambiar mora diaria* tiene dos opciones:
+  - **Desde una fecha** (por ejemplo, hoy): lo que ya se generó queda igual y la nueva tarifa corre desde ese día. El detalle muestra la mora separada por tramos.
+  - **Todo el préstamo:** recalcula toda la mora con la nueva tarifa, también la de los días pasados.
 - **Préstamos viejos:** se cargan con fechas pasadas. El campo opcional *Cobrar mora desde* sirve para empezar a contar la mora desde una fecha posterior al vencimiento.
 - **Pagos parciales:** con fecha, monto y nota. Se pueden editar o borrar.
 - **Estados automáticos:** Al día · Vence pronto (3 días o menos) · Atrasado (cuotas diarias impagas) · Vencido (corre mora) · Pagado · Condonado (manual, se puede revertir).
 - **Personas:** nombre, teléfono y notas, con accesos para llamar y abrir WhatsApp.
 - **Resumen por WhatsApp** de cualquier préstamo.
+- **Reportes** (por moneda):
+  - Ganancia cobrada y rendimiento sobre el capital prestado.
+  - Capital en la calle, total cobrado, saldo por cobrar, ganancia por cobrar y rendimiento esperado.
+  - Mora generada y lo que se condonó.
+  - Cobros por mes (últimos 6 meses) y quién te debe más.
+  - Resumen de lo que debés.
+
+  La ganancia se calcula considerando que cada pago cubre primero el capital.
 - **Backup:** exportar e importar en JSON desde *Ajustes*. La app avisa si pasaron más de 14 días sin backup.
 - Modo claro y oscuro según el sistema.
 
