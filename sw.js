@@ -3,7 +3,7 @@
 // y la copia guardada solo se usa si no hay internet. Así las actualizaciones se ven al instante.
 // Al publicar, subí el número de CACHE (y APP_VERSION en js/app.js).
 
-const CACHE = 'prestamos-v6';
+const CACHE = 'prestamos-v7';
 const ASSETS = [
   './',
   './index.html',

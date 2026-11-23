@@ -19,6 +19,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 - **Dos modalidades:**
   - **Con porcentaje:** total = capital + %, a devolver en la fecha acordada. Ej.: $100.000 al 20 % → $120.000.
   - **Interés diario:** un interés fijo por día, desde el día siguiente al préstamo hasta la fecha de pago (inclusive). Total = capital + interés diario × días, y se devuelve todo junto en la fecha de pago. Ej.: $600.000 del 5/11 al 11/11 a $25.000 por día → 6 días, $150.000 de interés, total $750.000.
+  - **En cuotas:** cantidad, monto de cada cuota (capital + interés), primera fecha y frecuencia (semanal, quincenal, mensual o cada X días). La app arma las fechas y podés editar cualquier fecha o monto. Total = suma de las cuotas. Cada cuota puede tener **días de margen**: si paga dentro del margen no hay mora; si se pasa, la mora corre desde el día siguiente a que termina el margen, **por cada cuota atrasada**. Los pagos se aplican primero a la cuota más vieja. Si la mora es en %, se calcula sobre lo que falta pagar de esa cuota.
 - **Mora:** corre después de la fecha acordada, mientras quede saldo, y deja de correr cuando se paga todo. En cada préstamo se elige:
   - **Monto fijo** o **% del capital** (el porcentaje se calcula siempre sobre el capital, aunque haya pagos parciales).
   - **Por día, por semana o por mes.** Se cobra proporcional a los días: semana = 7 días, mes = 30 días. Ej.: 7 % semanal sobre $200.000 → $2.000 por día de atraso.
