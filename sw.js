@@ -3,7 +3,7 @@
 // así una versión nueva se ve la próxima vez que se abre la app.
 // Al publicar cambios grandes, subí el número de CACHE para forzar la limpieza.
 
-const CACHE = 'prestamos-v1';
+const CACHE = 'prestamos-v2';
 const ASSETS = [
   './',
   './index.html',
