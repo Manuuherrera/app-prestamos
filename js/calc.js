@@ -33,16 +33,14 @@ export const round2 = (x) => Math.round((x + Number.EPSILON) * 100) / 100;
 /**
  * Condiciones acordadas del préstamo (sin mora ni pagos).
  * - percent: total = capital × (1 + % / 100), a devolver en la fecha acordada.
- * - daily:   una cuota fija por día, desde el día siguiente al inicio hasta la fecha acordada.
+ * - daily:   interés fijo por día (desde el día siguiente al inicio hasta la fecha acordada, inclusive);
+ *            total = capital + interés diario × días. Se devuelve todo junto en la fecha acordada.
  */
 export function loanTerms(loan) {
   const days = Math.max(0, diffDays(loan.startDate, loan.dueDate));
-  if (loan.mode === 'daily') {
-    const total = round2((loan.dailyAmount || 0) * days);
-    return { days, installments: days, total, interest: round2(total - loan.capital) };
-  }
-  const total = round2(loan.capital * (1 + (loan.percent || 0) / 100));
-  return { days, installments: 0, total, interest: round2(total - loan.capital) };
+  const interest =
+    loan.mode === 'daily' ? round2((loan.dailyAmount || 0) * days) : round2((loan.capital * (loan.percent || 0)) / 100);
+  return { days, total: round2(loan.capital + interest), interest };
 }
 
 /** Primer día en que corre la mora: el día siguiente al vencimiento, o "cobrar mora desde" si es posterior. */
@@ -156,21 +154,10 @@ export function computeLoan(loan, asOf = todayISO()) {
   const balance = round2(owed - paid);
   const daysToDue = diffDays(asOf, loan.dueDate);
 
-  let expected = 0;
-  let behindBy = 0;
-  let installmentsBehind = 0;
-  if (loan.mode === 'daily' && terms.installments > 0) {
-    const elapsed = Math.min(Math.max(diffDays(loan.startDate, asOf), 0), terms.installments);
-    expected = round2(loan.dailyAmount * elapsed);
-    behindBy = round2(Math.max(0, Math.min(expected, terms.total) - paid));
-    installmentsBehind = loan.dailyAmount > 0 ? Math.floor(behindBy / loan.dailyAmount + EPS) : 0;
-  }
-
   let status;
   if (forgiven) status = 'forgiven';
   else if (balance <= EPS) status = 'paid';
   else if (daysToDue < 0) status = 'overdue';
-  else if (behindBy > EPS) status = 'behind';
   else if (daysToDue <= 3) status = 'dueSoon';
   else status = 'current';
 
@@ -190,18 +177,15 @@ export function computeLoan(loan, asOf = todayISO()) {
     status,
     daysToDue,
     daysOverdue: status === 'overdue' ? -daysToDue : 0,
-    expected,
-    behindBy,
-    installmentsBehind,
     lastPayment,
     progress: owed > 0 ? Math.min(1, paid / owed) : 1,
   };
 }
 
-export const OPEN_STATUSES = ['overdue', 'behind', 'dueSoon', 'current'];
+export const OPEN_STATUSES = ['overdue', 'dueSoon', 'current'];
 export const isOpen = (status) => OPEN_STATUSES.includes(status);
 
-const STATUS_RANK = { overdue: 0, behind: 1, dueSoon: 2, current: 3, paid: 4, forgiven: 5 };
+const STATUS_RANK = { overdue: 0, dueSoon: 1, current: 2, paid: 3, forgiven: 4 };
 
 /** Orden de las listas: primero lo urgente, después lo que vence antes y al final lo cerrado. */
 export function compareLoans(a, b) {

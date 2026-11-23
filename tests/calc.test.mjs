@@ -81,31 +81,27 @@ test('pagos futuros no cuentan todavía', () => {
   assert.equal(computeLoan(l, '2026-01-10').paid, 0);
 });
 
-test('cuota diaria: total = cuota × días y detecta atraso en cuotas', () => {
-  const l = loan({ mode: 'daily', dailyAmount: 5000, dueDate: '2026-01-31' });
+test('interés diario: total = capital + interés por día × días (desde el día siguiente)', () => {
+  // Caso real: 600.000 del 5/11 al 11/11 a 25.000 por día → 6 días, 150.000 de interés, total 750.000.
+  const l = loan({ mode: 'daily', capital: 600000, dailyAmount: 25000, startDate: '2026-11-05', dueDate: '2026-11-11' });
   const t = loanTerms(l);
-  assert.equal(t.installments, 30);
-  assert.equal(t.total, 150000);
-  assert.equal(t.interest, 50000);
-
-  const behind = computeLoan({ ...l, payments: [{ id: 'a', date: '2026-01-08', amount: 40000 }] }, '2026-01-11');
-  assert.equal(behind.expected, 50000);
-  assert.equal(behind.behindBy, 10000);
-  assert.equal(behind.installmentsBehind, 2);
-  assert.equal(behind.status, 'behind');
-
-  const ok = computeLoan({ ...l, payments: [{ id: 'a', date: '2026-01-10', amount: 50000 }] }, '2026-01-10');
-  assert.equal(ok.status, 'current');
+  assert.equal(t.days, 6);
+  assert.equal(t.interest, 150000);
+  assert.equal(t.total, 750000);
+  // Se paga todo junto al final: sin pagos antes del vencimiento sigue al día.
+  assert.equal(computeLoan(l, '2026-11-06').status, 'current');
+  assert.equal(computeLoan(l, '2026-11-09').status, 'dueSoon');
 });
 
-test('cuota diaria vencida con saldo: corre la mora', () => {
+test('interés diario vencido con saldo: corre la mora', () => {
   const l = loan({
     mode: 'daily',
     dailyAmount: 5000,
     dueDate: '2026-01-31',
     lateFeePerDay: 2000,
-    payments: [{ id: 'a', date: '2026-01-31', amount: 140000 }],
+    payments: [{ id: 'a', date: '2026-01-31', amount: 240000 }],
   });
+  // 100.000 + 30 × 5.000 = 250.000; pagó 240.000; 3 días de mora.
   const c = computeLoan(l, '2026-02-03');
   assert.equal(c.status, 'overdue');
   assert.equal(c.mora, 6000);
