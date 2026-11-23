@@ -40,6 +40,9 @@ export function normalize(raw) {
       dailyAmount: num(l.dailyAmount),
       lateFeePerDay: num(l.lateFeePerDay),
       lateFeeFrom: isIso(l.lateFeeFrom) ? l.lateFeeFrom : null,
+      lateFeeChanges: (Array.isArray(l.lateFeeChanges) ? l.lateFeeChanges : [])
+        .filter((ch) => ch && isIso(ch.from) && num(ch.amount) >= 0)
+        .map((ch) => ({ id: String(ch.id || uid()), from: ch.from, amount: num(ch.amount) })),
       forgivenAt: isIso(l.forgivenAt) ? l.forgivenAt : null,
       notes: l.notes || '',
       createdAt: l.createdAt || new Date().toISOString(),
