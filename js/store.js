@@ -1,5 +1,7 @@
 // Persistencia local: todo queda en el teléfono (localStorage). No hay servidor.
 
+import { asRate } from './calc.js';
+
 const KEY = 'prestamos.v1';
 const PREF_PREFIX = 'prestamos.pref.';
 
@@ -38,11 +40,13 @@ export function normalize(raw) {
       mode: l.mode === 'daily' ? 'daily' : 'percent',
       percent: num(l.percent),
       dailyAmount: num(l.dailyAmount),
-      lateFeePerDay: num(l.lateFeePerDay),
+      // Formato viejo: `lateFeePerDay` (monto fijo diario) y cambios con `amount`. Se migran a tarifas.
+      lateFee: asRate(l.lateFee ?? l.lateFeePerDay),
       lateFeeFrom: isIso(l.lateFeeFrom) ? l.lateFeeFrom : null,
       lateFeeChanges: (Array.isArray(l.lateFeeChanges) ? l.lateFeeChanges : [])
-        .filter((ch) => ch && isIso(ch.from) && num(ch.amount) >= 0)
-        .map((ch) => ({ id: String(ch.id || uid()), from: ch.from, amount: num(ch.amount) })),
+        .filter((ch) => ch && isIso(ch.from))
+        .map((ch) => ({ id: String(ch.id || uid()), from: ch.from, rate: asRate(ch.rate ?? ch.amount) }))
+        .filter((ch) => ch.rate.value >= 0),
       forgivenAt: isIso(l.forgivenAt) ? l.forgivenAt : null,
       notes: l.notes || '',
       createdAt: l.createdAt || new Date().toISOString(),
