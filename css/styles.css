@@ -585,7 +585,8 @@ summary {
 .field + .field::before,
 [data-when] + .field::before,
 .field + [data-when] > .field:first-child::before,
-.chips--inline + .field::before {
+.chips--inline + .field::before,
+.preview--fee + .field::before {
   content: '';
   position: absolute;
   top: 0;

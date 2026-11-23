@@ -9,6 +9,9 @@ import {
   isOpen,
   round2,
   feeChanges,
+  asRate,
+  baseRate,
+  dailyFee,
   profitReport,
   paymentsByMonth,
 } from './calc.js';
@@ -144,6 +147,65 @@ function shell({ title, back, right = '', large = false, body }) {
 // ---------------------------------------------------------------------------
 
 const pill = (status) => `<span class="pill pill--${STATUS[status].tone}">${STATUS[status].label}</span>`;
+
+// --- Tarifas de mora (monto fijo o % del capital, por día/semana/mes) ---
+
+const PERIOD = {
+  day: { adj: 'diario', per: 'por día', tab: 'Día' },
+  week: { adj: 'semanal', per: 'por semana', tab: 'Semana' },
+  month: { adj: 'mensual', per: 'por mes', tab: 'Mes' },
+};
+
+/** "$ 2.000 por día" · "5 % semanal del capital" · "Sin mora" */
+function rateLabel(rate, cur) {
+  const r = asRate(rate);
+  if (!r.value) return 'Sin mora';
+  return r.type === 'percent' ? `${amountForInput(r.value)} % ${PERIOD[r.period].adj} del capital` : `${money(r.value, cur)} ${PERIOD[r.period].per}`;
+}
+
+/** Campos para cargar una tarifa (tipo, valor y período). */
+function rateFields(rate, cur, { autofocus = false } = {}) {
+  const r = asRate(rate);
+  return `
+    <div class="field">
+      ${segmented('feeType', [['fixed', 'Monto fijo'], ['percent', '% del capital']], r.type, { form: true })}
+    </div>
+    <label class="field">
+      <span class="field-label" data-when="feeType:fixed">Monto de la mora (${cur === 'USD' ? 'US$' : '$'})</span>
+      <span class="field-label" data-when="feeType:percent">Porcentaje del capital</span>
+      <span class="input-affix">
+        <input name="feeValue" type="text" inputmode="decimal" placeholder="0 = sin mora" value="${r.value ? amountForInput(r.value) : ''}" ${autofocus ? 'autofocus' : ''} enterkeyhint="done">
+        <span data-when="feeType:percent">%</span>
+      </span>
+    </label>
+    <div class="field field--inline">
+      <span class="field-label">Cada</span>
+      ${segmented('feePeriod', Object.entries(PERIOD).map(([k, v]) => [k, v.tab]), r.period, { form: true })}
+    </div>
+    <output class="preview preview--fee" aria-live="polite" hidden></output>`;
+}
+
+function readRate(f) {
+  const raw = String(f.get('feeValue') || '').trim();
+  return { type: f.get('feeType') === 'percent' ? 'percent' : 'fixed', value: raw ? parseAmount(raw) : 0, period: f.get('feePeriod') || 'day' };
+}
+
+/** Muestra cuánto suma por día una tarifa que no es un monto fijo diario. */
+function updateRatePreview(form, capital, cur) {
+  const out = form.querySelector('.preview--fee');
+  if (!out) return;
+  const rate = readRate(new FormData(form));
+  let html = '';
+  if (!Number.isNaN(rate.value) && rate.value > 0 && !(rate.type === 'fixed' && rate.period === 'day')) {
+    if (rate.type === 'percent' && !(capital > 0)) html = '<span>Cargá el capital para ver cuánto suma por día.</span>';
+    else {
+      const daily = dailyFee({ capital }, rate);
+      html = `<strong>Suma ${money(daily, cur)} por día de atraso</strong>${rate.period !== 'day' ? `<span>Se cobra proporcional: ${rate.period === 'week' ? 'semana = 7 días' : 'mes = 30 días'}.</span>` : ''}`;
+    }
+  }
+  out.innerHTML = html;
+  out.hidden = !html;
+}
 
 /** "13 días × $ 2.000", o "13 días" si hubo más de una tarifa. */
 const moraDetail = (c, m) =>
@@ -346,7 +408,7 @@ function loanDetailView(loan) {
   if (c.status === 'overdue') {
     callout = `<div class="callout callout--red">
       <strong>Venció hace ${plural(c.daysOverdue, 'día', 'días')}.</strong>
-      ${c.currentFee ? `Corre una mora de ${m(c.currentFee)} por día${c.moraFrom > asOf ? ` desde el ${dateShort(c.moraFrom, asOf)}` : ''}.` : c.mora ? 'Ahora no corre mora.' : 'No tiene mora acordada.'}
+      ${c.currentFee ? `Corre una mora de ${rateLabel(c.currentRate, cur)}${c.currentRate.type === 'fixed' && c.currentRate.period === 'day' ? '' : ` (${m(c.currentFee)} por día)`}${c.moraFrom > asOf ? ` desde el ${dateShort(c.moraFrom, asOf)}` : ''}.` : c.mora ? 'Ahora no corre mora.' : 'No tiene mora acordada.'}
     </div>`;
   } else if (c.status === 'behind') {
     callout = `<div class="callout callout--orange">
@@ -354,7 +416,7 @@ function loanDetailView(loan) {
       A hoy debería ${loan.direction === 'lent' ? 'haberte pagado' : 'haber recibido'} ${m(c.expected)} y lleva ${m(c.paid)}. Faltan ${m(c.behindBy)}.
     </div>`;
   } else if (c.status === 'dueSoon') {
-    callout = `<div class="callout callout--yellow"><strong>${c.daysToDue === 0 ? 'Vence hoy.' : c.daysToDue === 1 ? 'Vence mañana.' : `Vence en ${c.daysToDue} días.`}</strong> ${c.currentFee ? `Después corre una mora de ${m(c.currentFee)} por día.` : ''}</div>`;
+    callout = `<div class="callout callout--yellow"><strong>${c.daysToDue === 0 ? 'Vence hoy.' : c.daysToDue === 1 ? 'Vence mañana.' : `Vence en ${c.daysToDue} días.`}</strong> ${c.currentFee ? `Después corre una mora de ${rateLabel(c.currentRate, cur)}.` : ''}</div>`;
   }
 
   const hero = `
@@ -407,19 +469,19 @@ function loanDetailView(loan) {
     `
       ${kv('Fecha de inicio', dateLong(loan.startDate))}
       ${kv(loan.mode === 'daily' ? 'Última cuota' : 'Fecha de pago', dateLong(loan.dueDate))}
-      ${kv(changes.length ? 'Mora inicial por día' : 'Mora por día', loan.lateFeePerDay ? m(loan.lateFeePerDay) : 'Sin mora')}
+      ${kv(changes.length ? 'Mora inicial' : 'Mora', rateLabel(baseRate(loan), cur))}
       ${changes
         .map(
           (ch) => `
         <button type="button" class="row tappable" data-action="fee-change-menu" data-id="${ch.id}">
           <span class="row-main"><span class="row-label">Desde el ${dateShort(ch.from, asOf)}</span></span>
-          <span class="row-end"><span class="row-value">${ch.amount ? `${m(ch.amount)} por día` : 'Sin mora'}</span>${icon('chevron', 'row-chevron')}</span>
+          <span class="row-end"><span class="row-value">${rateLabel(ch.rate, cur)}</span>${icon('chevron', 'row-chevron')}</span>
         </button>`,
         )
         .join('')}
       ${loan.lateFeeFrom && loan.lateFeeFrom > addDays(loan.dueDate, 1) ? kv('Mora desde', dateLong(loan.lateFeeFrom)) : ''}
       ${kv('Moneda', cur === 'USD' ? 'Dólares' : 'Pesos')}
-      ${c.status !== 'forgiven' ? `<button type="button" class="row row--action tappable" data-action="change-fee">${icon('edit')}<span>Cambiar mora diaria</span></button>` : ''}
+      ${c.status !== 'forgiven' ? `<button type="button" class="row row--action tappable" data-action="change-fee">${icon('edit')}<span>Cambiar mora</span></button>` : ''}
     `,
     { title: 'Condiciones' },
   );
@@ -491,7 +553,7 @@ function loanFormView(loan, presetPersonId) {
     mode: 'percent',
     percent: '',
     dailyAmount: '',
-    lateFeePerDay: '',
+    lateFee: { type: 'fixed', value: 0, period: 'day' },
     lateFeeFrom: null,
     notes: '',
   };
@@ -568,10 +630,7 @@ function loanFormView(loan, presetPersonId) {
 
       ${group(
         `
-        <label class="field">
-          <span class="field-label">Mora por día de atraso</span>
-          <input name="lateFeePerDay" type="text" inputmode="decimal" placeholder="0 = sin mora" value="${amountForInput(l.lateFeePerDay)}">
-        </label>
+        ${rateFields(editing ? baseRate(loan) : l.lateFee, l.currency)}
         <details class="field" ${l.lateFeeFrom ? 'open' : ''}>
           <summary>¿Es un préstamo viejo?</summary>
           <label class="field field--nested">
@@ -584,10 +643,10 @@ function loanFormView(loan, presetPersonId) {
           title: 'Si no paga a tiempo',
           footer:
             editing && feeChanges(loan).length
-              ? 'Este préstamo tiene cambios de mora desde ciertas fechas. Este valor solo rige antes del primer cambio. Los cambios se manejan desde el detalle, en "Cambiar mora diaria".'
+              ? 'Este préstamo tiene cambios de mora desde ciertas fechas. Este valor solo rige antes del primer cambio. Los cambios se manejan desde el detalle, en "Cambiar mora".'
               : editing
-                ? 'Cambiar este valor recalcula toda la mora, también la pasada. Para cambiarla solo desde una fecha, usá "Cambiar mora diaria" en el detalle del préstamo.'
-                : 'La mora es un monto fijo que se suma por cada día de atraso mientras quede saldo.',
+                ? 'Cambiar este valor recalcula toda la mora, también la pasada. Para cambiarla solo desde una fecha, usá "Cambiar mora" en el detalle del préstamo.'
+                : 'La mora se suma por cada día de atraso mientras quede saldo. Si es por semana o por mes, se cobra proporcional a los días.',
         },
       )}
 
@@ -625,7 +684,7 @@ function readLoanForm(form) {
     mode: f.get('mode'),
     percent: f.get('percent') ? n('percent') : 0,
     dailyAmount: n('dailyAmount'),
-    lateFeePerDay: f.get('lateFeePerDay') ? n('lateFeePerDay') : 0,
+    lateFee: readRate(f),
     lateFeeFrom: f.get('lateFeeFrom') || null,
     notes: String(f.get('notes') || '').trim(),
   };
@@ -643,7 +702,7 @@ function validateLoan(v) {
     if (!(v.dailyAmount > 0)) return 'La cuota diaria tiene que ser mayor a cero.';
     if (v.dueDate <= v.startDate) return 'La última cuota tiene que ser posterior a la fecha de inicio.';
   }
-  if (Number.isNaN(v.lateFeePerDay) || v.lateFeePerDay < 0) return 'La mora por día no es válida.';
+  if (Number.isNaN(v.lateFee.value) || v.lateFee.value < 0) return 'El valor de la mora no es válido.';
   return '';
 }
 
@@ -651,8 +710,9 @@ function updateLoanForm(form) {
   if (!form) return;
   updateWhen(form);
   const v = readLoanForm(form);
-  const out = form.querySelector('.preview');
+  const out = form.querySelector('.preview:not(.preview--fee)');
   const cur = v.currency;
+  updateRatePreview(form, v.capital, cur);
   const days = v.startDate && v.dueDate ? diffDays(v.startDate, v.dueDate) : 0;
   let html = '';
   if (v.mode === 'daily' && v.dailyAmount > 0 && days > 0) {
@@ -696,13 +756,14 @@ function saveLoan(form) {
     mode: v.mode,
     percent: v.mode === 'percent' ? v.percent : 0,
     dailyAmount: v.mode === 'daily' ? v.dailyAmount : 0,
-    lateFeePerDay: v.lateFeePerDay,
+    lateFee: v.lateFee,
     lateFeeFrom: v.lateFeeFrom,
     notes: v.notes,
   };
   let loanId;
   if (existing) {
     Object.assign(existing, data);
+    delete existing.lateFeePerDay; // formato viejo, reemplazado por `lateFee`
     loanId = existing.id;
   } else {
     loanId = store.uid();
@@ -824,14 +885,11 @@ function feeSheet(loan) {
   openSheet(`
     <form class="form sheet-form" data-form="fee" method="dialog" novalidate>
       <input type="hidden" name="loanId" value="${loan.id}">
-      <h2 class="sheet-title">Cambiar mora diaria</h2>
-      <p class="sheet-sub">Ahora: ${c.currentFee ? `${money(c.currentFee, cur)} por día` : 'sin mora'}</p>
+      <h2 class="sheet-title">Cambiar mora</h2>
+      <p class="sheet-sub">Ahora: ${rateLabel(c.currentRate, cur)}</p>
       ${segmented('scope', [['from', 'Desde una fecha'], ['all', 'Todo el préstamo']], 'from', { form: true })}
       ${group(`
-        <label class="field">
-          <span class="field-label">Nueva mora por día (${cur === 'USD' ? 'US$' : '$'})</span>
-          <input name="amount" type="text" inputmode="decimal" placeholder="0 = sin mora" autofocus enterkeyhint="done">
-        </label>
+        ${rateFields(c.currentRate, cur, { autofocus: true })}
         <label class="field" data-when="scope:from">
           <span class="field-label">A partir del</span>
           <input name="from" type="date" value="${today}">
@@ -844,7 +902,9 @@ function feeSheet(loan) {
         <button type="submit" class="button button--primary tappable">Guardar</button>
       </div>
     </form>`);
-  updateWhen($sheet.querySelector('form'));
+  const form = $sheet.querySelector('form');
+  updateWhen(form);
+  updateRatePreview(form, loan.capital, cur);
 }
 
 /** Muestra u oculta los elementos con data-when="campo:valor" según el formulario. */
@@ -861,22 +921,22 @@ function saveFee(form) {
   const f = new FormData(form);
   const loan = loanById(f.get('loanId'));
   if (!loan) return closeSheet();
-  const raw = String(f.get('amount') || '').trim();
-  const amount = raw ? parseAmount(raw) : 0;
+  const rate = readRate(f);
   const $err = form.querySelector('.form-error');
   const fail = (msg) => {
     $err.textContent = msg;
     $err.hidden = false;
   };
-  if (Number.isNaN(amount) || amount < 0) return fail('Ingresá un monto válido (0 para dejar de cobrar mora).');
+  if (Number.isNaN(rate.value) || rate.value < 0) return fail('Ingresá un valor válido (0 para dejar de cobrar mora).');
   if (f.get('scope') === 'all') {
-    loan.lateFeePerDay = amount;
+    loan.lateFee = rate;
+    delete loan.lateFeePerDay;
     loan.lateFeeChanges = [];
   } else {
     const from = f.get('from');
     if (!from) return fail('Elegí desde qué fecha rige.');
     loan.lateFeeChanges = (loan.lateFeeChanges || []).filter((ch) => ch.from !== from);
-    loan.lateFeeChanges.push({ id: store.uid(), from, amount });
+    loan.lateFeeChanges.push({ id: store.uid(), from, rate });
   }
   persist();
   closeSheet();
@@ -887,7 +947,7 @@ function saveFee(form) {
 function feeChangeMenu(loan, ch) {
   openSheet(`
     <div class="sheet-form">
-      <h2 class="sheet-title">${ch.amount ? `${money(ch.amount, loan.currency)} por día` : 'Sin mora'}</h2>
+      <h2 class="sheet-title">${rateLabel(ch.rate ?? ch.amount, loan.currency)}</h2>
       <p class="sheet-sub">Desde el ${dateLong(ch.from)}</p>
       ${group(`<button type="button" class="row row--action row--danger tappable" data-action="delete-fee-change" data-id="${ch.id}">${icon('trash')}<span>Eliminar este cambio</span></button>`, {
         footer: 'Si lo eliminás, esos días se recalculan con la tarifa anterior.',
@@ -1441,7 +1501,15 @@ document.addEventListener('submit', (e) => {
   }
 });
 
+function refreshFeeForm(form) {
+  updateWhen(form);
+  const loan = loanById(new FormData(form).get('loanId'));
+  if (loan) updateRatePreview(form, loan.capital, loan.currency);
+}
+
 document.addEventListener('input', (e) => {
+  const feeForm = e.target.closest('form[data-form="fee"]');
+  if (feeForm) return refreshFeeForm(feeForm);
   const form = e.target.closest('form[data-form="loan"]');
   if (form) updateLoanForm(form);
 });
@@ -1449,7 +1517,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   if (e.target.dataset.actionChange === 'import') return importBackup(e.target);
   const feeForm = e.target.closest('form[data-form="fee"]');
-  if (feeForm) return updateWhen(feeForm);
+  if (feeForm) return refreshFeeForm(feeForm);
   const form = e.target.closest('form[data-form="loan"]');
   if (form) updateLoanForm(form);
 });
