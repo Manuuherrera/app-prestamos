@@ -162,6 +162,31 @@ test('mora base cero con cambio posterior: empieza a cobrar desde el cambio', ()
   assert.equal(computeLoan(l, '2026-02-21').mora, 1000);
 });
 
+test('mora por porcentaje diario sobre el capital (no baja con pagos parciales)', () => {
+  // 1 % diario de 100.000 = 1.000 por día
+  const l = loan({ lateFeePerDay: undefined, lateFee: { type: 'percent', value: 1, period: 'day' }, payments: [{ id: 'p', date: '2026-01-20', amount: 50000 }] });
+  const c = computeLoan(l, '2026-02-05');
+  assert.equal(c.mora, 4000);
+  assert.equal(c.balance, 120000 + 4000 - 50000);
+});
+
+test('mora por semana y por mes se prorratea por día', () => {
+  const week = loan({ lateFee: { type: 'percent', value: 7, period: 'week' } }); // 7.000/semana → 1.000/día
+  assert.equal(computeLoan(week, '2026-02-04').mora, 3000);
+  const month = loan({ lateFee: { type: 'fixed', value: 30000, period: 'month' } }); // 30.000/mes → 1.000/día
+  assert.equal(computeLoan(month, '2026-02-04').mora, 3000);
+  const odd = loan({ lateFee: { type: 'percent', value: 1, period: 'week' } }); // 1.000/7 = 142,86 por día
+  assert.equal(computeLoan(odd, '2026-02-08').mora, 1000.02); // 7 × 142,86
+});
+
+test('cambio de fijo a porcentaje desde una fecha', () => {
+  const l = loan({ lateFeeChanges: [{ id: 'c', from: '2026-02-04', rate: { type: 'percent', value: 2, period: 'day' } }] });
+  const c = computeLoan(l, '2026-02-05');
+  assert.equal(c.mora, 2 * 1000 + 2 * 2000);
+  assert.equal(c.moraSegments.length, 2);
+  assert.equal(c.currentRate.type, 'percent');
+});
+
 test('reporte de ganancia: los pagos cubren primero el capital', () => {
   const a = loan({ payments: [{ id: 'p', date: '2026-01-20', amount: 120000 }] }); // cerrado, ganó 20.000
   const b = loan({ capital: 50000, percent: 10, payments: [{ id: 'q', date: '2026-01-10', amount: 20000 }] }); // abierto

@@ -51,26 +51,57 @@ export function lateFeeStart(loan) {
   return loan.lateFeeFrom && loan.lateFeeFrom > dayAfterDue ? loan.lateFeeFrom : dayAfterDue;
 }
 
-/** Cambios de mora ordenados por fecha. Cada uno rige desde `from` (inclusive) hasta el siguiente. */
-export function feeChanges(loan) {
-  return (loan.lateFeeChanges || []).slice().sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+/**
+ * Tarifa de mora: { type: 'fixed' | 'percent', value, period: 'day' | 'week' | 'month' }.
+ * - fixed:   `value` es un monto por período.
+ * - percent: `value` es un % del capital por período.
+ * Se cobra prorrateada por día: semana = 7 días, mes = 30 días.
+ */
+export const PERIOD_DAYS = { day: 1, week: 7, month: 30 };
+
+/** Normaliza una tarifa (acepta el formato viejo: un monto fijo por día). */
+export function asRate(r) {
+  if (r && typeof r === 'object' && 'type' in r) {
+    return { type: r.type === 'percent' ? 'percent' : 'fixed', value: Number(r.value) || 0, period: PERIOD_DAYS[r.period] ? r.period : 'day' };
+  }
+  return { type: 'fixed', value: Number(r) || 0, period: 'day' };
 }
 
-/** Mora diaria vigente en un día: la del último cambio con `from` <= día, o la mora base del préstamo. */
-export function feeOn(loan, iso, changes = feeChanges(loan)) {
-  let fee = loan.lateFeePerDay || 0;
+/** Tarifa base del préstamo (antes de cualquier cambio). */
+export const baseRate = (loan) => asRate(loan.lateFee ?? loan.lateFeePerDay);
+
+/** Mora diaria (monto) que genera una tarifa para este préstamo, redondeada a centavos. */
+export function dailyFee(loan, rate) {
+  const r = asRate(rate);
+  const perPeriod = r.type === 'percent' ? (loan.capital * r.value) / 100 : r.value;
+  return round2(perPeriod / PERIOD_DAYS[r.period]);
+}
+
+/** Cambios de mora ordenados por fecha. Cada uno rige desde `from` (inclusive) hasta el siguiente. */
+export function feeChanges(loan) {
+  return (loan.lateFeeChanges || [])
+    .map((ch) => ({ ...ch, rate: asRate(ch.rate ?? ch.amount) }))
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+}
+
+/** Tarifa vigente en un día: la del último cambio con `from` <= día, o la base del préstamo. */
+export function rateOn(loan, iso, changes = feeChanges(loan)) {
+  let rate = baseRate(loan);
   for (const ch of changes) {
-    if (ch.from <= iso) fee = ch.amount;
+    if (ch.from <= iso) rate = ch.rate;
     else break;
   }
-  return fee;
+  return rate;
 }
+
+/** Mora diaria (monto) vigente en un día. */
+export const feeOn = (loan, iso, changes = feeChanges(loan)) => dailyFee(loan, rateOn(loan, iso, changes));
 
 /**
  * Estado del préstamo a una fecha dada.
  *
  * Mora: por cada día D desde `lateFeeStart` hasta la fecha de corte, si al empezar ese día
- * queda saldo (total + mora acumulada − pagos hechos antes de D), se suma `lateFeePerDay`.
+ * queda saldo (total + mora acumulada − pagos hechos antes de D), se suma la mora diaria vigente ese día.
  * O sea, el saldo de "hoy" ya incluye la mora de hoy, y si se paga ese saldo hoy, deja de correr.
  * Si el préstamo se condonó, la mora se congela en la fecha de condonación.
  */
@@ -85,7 +116,7 @@ export function computeLoan(loan, asOf = todayISO()) {
   const forgiven = Boolean(loan.forgivenAt);
   const moraUntil = forgiven && loan.forgivenAt < asOf ? loan.forgivenAt : asOf;
   const changes = feeChanges(loan);
-  const anyFee = (loan.lateFeePerDay || 0) > 0 || changes.some((ch) => ch.amount > 0);
+  const anyFee = dailyFee(loan, baseRate(loan)) > 0 || changes.some((ch) => dailyFee(loan, ch.rate) > 0);
   const moraFrom = lateFeeStart(loan);
 
   let mora = 0;
@@ -104,7 +135,8 @@ export function computeLoan(loan, asOf = todayISO()) {
       // Una vez saldado no puede volver a tener saldo (los pagos solo restan), así que cortamos.
       if (terms.total + mora - paidBefore <= EPS) break;
       const iso = fromDayNumber(d);
-      const fee = feeOn(loan, iso, changes);
+      const rate = rateOn(loan, iso, changes);
+      const fee = dailyFee(loan, rate);
       if (fee <= 0) continue;
       mora += fee;
       moraDays++;
@@ -114,7 +146,7 @@ export function computeLoan(loan, asOf = todayISO()) {
         last.days++;
         last.subtotal = round2(last.subtotal + fee);
       } else {
-        segments.push({ from: iso, to: iso, days: 1, fee, subtotal: fee });
+        segments.push({ from: iso, to: iso, days: 1, fee, rate, subtotal: fee });
       }
     }
     mora = round2(mora);
@@ -152,6 +184,7 @@ export function computeLoan(loan, asOf = todayISO()) {
     moraFrom,
     moraSegments: segments,
     currentFee: feeOn(loan, asOf, changes),
+    currentRate: rateOn(loan, asOf, changes),
     owed,
     balance,
     status,
