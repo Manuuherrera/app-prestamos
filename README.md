@@ -32,6 +32,7 @@ App para el iPhone (PWA) para registrar la plata que prestás y la que te presta
 - **Estados automáticos:** Al día · Vence pronto (3 días o menos) · Vencido (corre mora) · Pagado · Condonado (manual, se puede revertir).
 - **Personas:** nombre, teléfono y notas, con accesos para llamar y abrir WhatsApp.
 - **Resumen por WhatsApp** de cualquier préstamo.
+- **Copiar detalle:** desde el detalle del préstamo copia al portapapeles un mensaje con de quién es, cuánto debe, desde cuándo, las condiciones, la mora, cada pago y el saldo a hoy, para pegarlo donde quieras.
 - **Reportes** (por moneda):
   - Ganancia cobrada y rendimiento sobre el capital prestado.
   - Capital en la calle, total cobrado, saldo por cobrar, ganancia por cobrar y rendimiento esperado.

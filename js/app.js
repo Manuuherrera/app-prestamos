@@ -26,7 +26,7 @@ import { money, dateLong, dateShort, dateNumeric, parseAmount, amountForInput, p
 // ---------------------------------------------------------------------------
 
 // Subir junto con CACHE en sw.js en cada publicación.
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 let db = store.load();
 const ui = {
@@ -76,6 +76,7 @@ const ICONS = {
     '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M15.5 4.6a3.5 3.5 0 0 1 0 6.8M18 14.8c1.9.7 3.1 2.4 3.5 5.2"/>',
   sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   share: '<path d="M12 3.5v11M7.5 8 12 3.5 16.5 8"/><path d="M5 12.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19v-6.5"/>',
+  copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 2 2h2.5"/>',
   chat: '<path d="M20 11.5a8 8 0 0 1-11.6 7.1L4 20l1.4-4.2A8 8 0 1 1 20 11.5Z"/>',
   phone:
     '<path d="M6.6 3.5h2.6l1.4 4-2 1.3a11 11 0 0 0 6.6 6.6l1.3-2 4 1.4v2.6a2 2 0 0 1-2.2 2A17 17 0 0 1 4.6 5.7a2 2 0 0 1 2-2.2Z"/>',
@@ -583,6 +584,7 @@ function loanDetailView(loan) {
 
   const actions = group(
     `
+      <button type="button" class="row row--action tappable" data-action="copy-loan">${icon('copy')}<span>Copiar detalle</span></button>
       <button type="button" class="row row--action tappable" data-action="share-loan">${icon('chat')}<span>Enviar resumen por WhatsApp</span></button>
       <a class="row row--action tappable" href="#/prestamo/${loan.id}/editar">${icon('edit')}<span>Editar préstamo</span></a>
       ${
@@ -1571,19 +1573,32 @@ async function importBackup(input) {
 }
 
 // ---------------------------------------------------------------------------
-// Compartir por WhatsApp
+// Compartir por WhatsApp / copiar el detalle
 // ---------------------------------------------------------------------------
 
-function shareLoan(loan) {
-  const c = computeLoan(loan);
+/**
+ * Texto con el detalle del préstamo.
+ * `greeting`: arranca con "Hola X, te paso el resumen…" (para mandar por WhatsApp);
+ * si no, arranca con quién es, cuánto debe y desde cuándo (para copiar).
+ */
+function loanSummaryText(loan, { greeting = false } = {}) {
+  const asOf = todayISO();
+  const c = computeLoan(loan, asOf);
   const person = personById(loan.personId);
   const m = (n) => money(n, loan.currency);
+  const name = person?.name || 'Sin nombre';
   const first = person?.name.split(' ')[0] || '';
-  const lines = [
-    `Hola${first ? ` ${first}` : ''}, te paso el resumen del préstamo al ${dateNumeric(todayISO())}:`,
-    '',
-    `• Capital: ${m(loan.capital)} (desde el ${dateNumeric(loan.startDate)})`,
-  ];
+  const lines = greeting
+    ? [`Hola${first ? ` ${first}` : ''}, te paso el resumen del préstamo al ${dateNumeric(asOf)}:`, '']
+    : [
+        `*Préstamo ${loan.direction === 'borrowed' ? 'de' : 'a'} ${name}* (al ${dateNumeric(asOf)})`,
+        isOpen(c.status)
+          ? `${loan.direction === 'borrowed' ? 'Le debo' : 'Me debe'} ${m(Math.max(0, c.balance))} · ${STATUS[c.status].label}`
+          : STATUS[c.status].label,
+        `Desde el ${dateNumeric(loan.startDate)} (${plural(Math.max(0, diffDays(loan.startDate, asOf)), 'día', 'días')})`,
+        '',
+      ];
+  lines.push(`• Capital: ${m(loan.capital)} (desde el ${dateNumeric(loan.startDate)})`);
   if (loan.mode === 'installments') {
     const STATE = { paid: 'pagada ✅', pending: 'pendiente', grace: 'vencida, en margen', late: 'atrasada' };
     lines.push(`• ${plural(c.installments.length, 'cuota', 'cuotas')}, total ${m(c.total)}:`);
@@ -1609,11 +1624,49 @@ function shareLoan(loan) {
       for (const s of c.moraSegments) lines.push(`   – ${dateNumeric(s.from)} al ${dateNumeric(s.to)}: ${plural(s.days, 'día', 'días')} × ${m(s.fee)}`);
     }
   }
+  const payments = [...loan.payments].sort((a, b) => (a.date < b.date ? -1 : 1));
+  if (payments.length) {
+    lines.push(`• Pagos (${payments.length}):`);
+    for (const p of payments) lines.push(`   – ${dateNumeric(p.date)}: ${m(p.amount)}${p.date > asOf ? ' (programado)' : ''}${p.note ? ` · ${p.note}` : ''}`);
+  } else {
+    lines.push('• Pagos: ninguno todavía');
+  }
   lines.push(`• Pagado: ${m(c.paid)}`);
-  lines.push(c.status === 'paid' ? '• Saldado ✅' : `• *Saldo a hoy: ${m(Math.max(0, c.balance))}*`);
-  const text = encodeURIComponent(lines.join('\n'));
-  const digits = phoneDigits(person?.phone);
+  lines.push(
+    c.status === 'paid'
+      ? '• Saldado ✅'
+      : c.status === 'forgiven'
+        ? `• Condonado (quedaban ${m(Math.max(0, c.balance))})`
+        : `• *Saldo a hoy: ${m(Math.max(0, c.balance))}*`,
+  );
+  if (!greeting && loan.notes) lines.push('', `Notas: ${loan.notes}`);
+  return lines.join('\n');
+}
+
+function shareLoan(loan) {
+  const text = encodeURIComponent(loanSummaryText(loan, { greeting: true }));
+  const digits = phoneDigits(personById(loan.personId)?.phone);
   window.open(`https://wa.me/${digits}?text=${text}`, '_blank', 'noopener');
+}
+
+async function copyLoan(loan) {
+  const text = loanSummaryText(loan);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Respaldo para navegadores sin la API del portapapeles (o sin HTTPS).
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) return toast('No se pudo copiar el detalle.', 'error');
+  }
+  toast('Detalle copiado');
 }
 
 // ---------------------------------------------------------------------------
@@ -1714,6 +1767,10 @@ const actions = {
   'share-loan'() {
     const loan = currentLoan();
     if (loan) shareLoan(loan);
+  },
+  'copy-loan'() {
+    const loan = currentLoan();
+    if (loan) copyLoan(loan);
   },
   forgive() {
     const loan = currentLoan();
